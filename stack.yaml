@@ -1,0 +1,5 @@
+flags: {}
+packages:
+- '.'
+extra-deps: [promises-0.2, profunctors-5.1.1, discrimination-0.1]
+resolver: nightly-2015-07-30
