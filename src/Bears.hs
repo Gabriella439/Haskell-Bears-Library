@@ -11,12 +11,11 @@ module Bears (
       module Bears
     , encode
     , decode
-    , fold
     ) where
 
 import Control.Applicative
 import Control.Exception (throwIO)
-import Control.Foldl (Fold(..), fold)
+import Control.Foldl (Fold(..))
 import Data.Csv (FromRecord, HasHeader(..), ToRecord, decode, encode)
 import Data.Functor.Constant (Constant(..))
 import Data.Hashable (Hashable)
@@ -97,6 +96,9 @@ aggregate (Fold step begin done) kvs =
     step' m (k, v) = case HashMap.lookup k m of
         Nothing -> HashMap.insert k (step begin v) m
         Just x  -> HashMap.insert k (step x     v) m
+
+fold :: Fold a b -> Vector a -> b
+fold = Fold.fold 
 
 scan :: Fold a b -> Vector a -> Vector b
 scan (Fold step begin done) as = Vector.map done (Vector.scanl' step begin as)
