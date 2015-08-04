@@ -1,33 +1,40 @@
-{-# LANGUAGE ExistentialQuantification  #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE OverloadedLists            #-}
 {-# LANGUAGE TypeFamilies               #-}
-{-# LANGUAGE RankNTypes                 #-}
 {-# OPTIONS_GHC -fno-warn-missing-methods #-}
 
 {-|
 >>> :set -XOverloadedLists
 -}
 
-module Bears where
+module Bears (
+      module Bears
+    , encode
+    , decode
+    , fold
+    ) where
 
 import Control.Applicative
 import Control.Exception (throwIO)
+import Control.Foldl (Fold(..), fold)
 import Data.Csv (FromRecord, HasHeader(..), ToRecord, decode, encode)
-import Data.List (foldl')
 import Data.Functor.Constant (Constant(..))
-import Data.Discrimination hiding (group)
+import Data.Hashable (Hashable)
+import Data.List (foldl')
+import Data.Map.Strict (Map)
 import Data.Monoid (Sum(..))
 import Data.Set (Set)
-import Data.Map.Strict (Map)
+import Data.Vector (Vector)
 import Lens.Family.Stock
 import GHC.Exts (IsList(..))
 import Prelude hiding (group, length, lookup, sum)
 
+import qualified Control.Foldl           as Fold
 import qualified Data.ByteString.Lazy    as ByteString
 import qualified Data.Foldable           as Foldable
-import qualified Data.Map.Strict         as Map
+import qualified Data.HashMap.Strict     as HashMap
 import qualified Data.Set                as Set
+import qualified Data.Vector             as Vector
 import qualified Network.HTTP.Client     as HTTP
 import qualified Network.HTTP.Client.TLS as HTTP
 
@@ -44,19 +51,6 @@ instance Ord k => Num (Keys k) where
     All     * ks      = ks
     ks      * All     = ks
     Some s1 * Some s2 = Some (Set.intersection s1 s2)
-
-newtype Unindexed v = Unindexed { getUnindexed :: [v] }
-    deriving (Functor, Applicative, Alternative)
-
-instance Show v => Show (Unindexed v) where
-    show = show . getUnindexed
-
-instance IsList (Unindexed v) where
-    type Item (Unindexed v) = v
-
-    fromList = Unindexed
-
-    toList = getUnindexed
 
 data Indexed k v = Indexed { keys :: Keys k, lookup :: k -> Maybe [v] }
 
@@ -77,114 +71,32 @@ instance Ord k => Alternative (Indexed k) where
 
     Indexed s1 f1 <|> Indexed s2 f2 = Indexed (s1 + s2) (liftA2 (<|>) f1 f2)
 
-data Pair a b = P !a !b
-
-instance (Monoid a, Monoid b) => Monoid (Pair a b) where
-    mempty = P mempty mempty
-
-    mappend (P xL yL) (P xR yR) = P (mappend xL xR) (mappend yL yR)
-
-data Aggregate a b = forall m . Monoid m => Aggregate (a -> m) (m -> b)
-
-instance Functor (Aggregate a) where
-     fmap f (Aggregate tally summarize) = Aggregate tally (f . summarize)
-
-instance Applicative (Aggregate a) where
-    pure b = Aggregate (\_ -> ()) (\_ -> b)
-
-    Aggregate tallyL summarizeL <*> Aggregate tallyR summarizeR =
-        Aggregate tally summarize
-      where
-        tally a = P (tallyL a) (tallyR a)
-
-        summarize (P l r) = summarizeL l (summarizeR r)
-
-fromFile :: FromRecord a => HasHeader -> FilePath -> IO (Unindexed a)
-fromFile header path = do
-    bs <- ByteString.readFile path
-    case decode header bs of
-        Left  str -> throwIO (userError str)
-        Right v   -> return (Unindexed (Foldable.toList v))
-
-fromURL :: FromRecord a => HasHeader -> String -> IO (Unindexed a)
-fromURL header url = do
-    request <- HTTP.parseUrl "https://www.example.com"
-    manager <- HTTP.newManager HTTP.tlsManagerSettings
-    response <- HTTP.httpLbs request manager
-    case decode header (HTTP.responseBody response) of
-        Left  str -> throwIO (userError str)
-        Right v   -> return (Unindexed (Foldable.toList v))
-
-toFile :: ToRecord a => FilePath -> Unindexed a -> IO ()
-toFile path (Unindexed xs) = do
-    ByteString.writeFile path (encode xs)
-
-group :: (Ord k, Sorting k) => Unindexed (k, v) -> Indexed k v
-group (Unindexed kvs) = Indexed
-    { keys   = Some (toSet (map fst kvs))
-    , lookup = \k -> Map.lookup k m
+group :: (Ord k, Hashable k) => Vector (k, v) -> Indexed k v
+group kvs = Indexed
+    { keys   = Some (Set.fromList (Vector.toList (Vector.map fst kvs)))
+    , lookup = \k -> HashMap.lookup k m
     }
   where
-    m = toMapWith (++) (map (\(k, v) -> (k, [v])) kvs)
+    m = HashMap.fromListWith (++) (map (\(k, v) -> (k, [v])) (Vector.toList kvs))
 
-scatter :: Indexed k v -> Maybe (Unindexed (k, v))
+scatter :: Indexed k v -> Maybe (Vector (k, v))
 scatter (Indexed (Some s) f) =
-    Just (Unindexed [ (k, v) | k <- Set.toList s, Just vs <- [f k], v <- vs ])
+    Just (Vector.fromList [ (k, v) | k <- Set.toList s, Just vs <- [f k], v <- vs ])
 scatter  _                   = Nothing
 
 {-|
->>> aggregate sum [(1,1),(2,2),(1,3)] :: Unindexed (Int, Int)
+>>> aggregate sum [(1,1),(2,2),(1,3)]
 [(1,4),(2,2)]
 -}
-aggregate :: Sorting k => Aggregate v r -> Unindexed (k, v) -> Unindexed (k, r)
-aggregate (Aggregate tally summarize) (Unindexed kvs) =
-    Unindexed
-        (Map.toList
-            (fmap
-                summarize
-                (toMapWith mappend (map (\(k, v) -> (k, tally v)) kvs)) ))
-
-{-|
->>> fold ((,) <$> sum <*> length) [0..10]
-(55,11)
--}
-fold :: Aggregate a b -> Unindexed a -> b
-fold (Aggregate tally summarize) (Unindexed as) =
-    summarize (foldl' mappend mempty (map tally as))
-
-{-|
->>> scan sum [1,2,3]
-[0,1,3,6]
--}
-scan :: Aggregate a b -> Unindexed a -> Unindexed b
-scan (Aggregate tally summarize) (Unindexed as) = Unindexed (foldr cons nil as mempty)
+aggregate
+    :: (Eq k, Hashable k) => Fold v r -> Vector (k, v) -> Vector (k, r)
+aggregate (Fold step begin done) kvs = 
+    Vector.fromList
+        (HashMap.toList (fmap done (Vector.foldl' step' HashMap.empty kvs)))
   where
-    nil      x = summarize x:[]
-    cons a k x = summarize x:(k $! mappend x (tally a))
+    step' m (k, v) = case HashMap.lookup k m of
+        Nothing -> HashMap.insert k (step begin v) m
+        Just x  -> HashMap.insert k (step x     v) m
 
-type Handler a b = forall m . Monoid m => (b -> Constant m b) -> (a -> Constant m a)
-
-{-|
->>> fold (handles _Just sum) [Nothing , Just 1, Nothing, Just 3]
-4
->>> fold (handles _1 sum) [(1, "A"), (2, "B"), (3, "C")]
-6
--}
-handles :: Handler a b -> Aggregate b r -> Aggregate a r
-handles k (Aggregate tally summarize) = Aggregate tally' summarize
-  where
-    tally' = getConstant . k (Constant . tally)
-
-{-|
->>> fold length ["A","B"]
-2
--}
-length :: Num n => Aggregate a n
-length = Aggregate (\_ -> Sum 1) getSum
-
-{-|
->>> fold sum [1,2,3]
-6
--}
-sum :: Num n => Aggregate n n
-sum = Aggregate Sum getSum
+scan :: Fold a b -> Vector a -> Vector b
+scan (Fold step begin done) as = Vector.map done (Vector.scanl' step begin as)

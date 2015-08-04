@@ -18,11 +18,14 @@ library
                      , bytestring
                      , cassava
                      , containers
-                     , discrimination
+                     , foldl
+                     , hashable
                      , http-client
                      , http-client-tls
                      , lens-family-core
                      , transformers
+                     , unordered-containers
+                     , vector
   default-language:    Haskell2010
 
 test-suite bears-test
