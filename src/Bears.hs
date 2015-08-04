@@ -5,6 +5,7 @@
 
 {-|
 >>> :set -XOverloadedLists
+>>> import qualified Control.Foldl as Fold
 -}
 
 module Bears (
@@ -26,7 +27,7 @@ import Data.Set (Set)
 import Data.Vector (Vector)
 import Lens.Family.Stock
 import GHC.Exts (IsList(..))
-import Prelude hiding (group, length, lookup, sum)
+import Prelude hiding (group, lookup)
 
 import qualified Control.Foldl           as Fold
 import qualified Data.ByteString.Lazy    as ByteString
@@ -88,8 +89,8 @@ scatter (Indexed (Some s) f) = Just vec1
 scatter  _                   = Nothing
 
 {-|
->>> aggregate sum [(1,1),(2,2),(1,3)]
-[(1,4),(2,2)]
+>>> aggregate Fold.sum [(1,1),(2,2),(1,3)]
+fromList [(1,4),(2,2)]
 -}
 aggregate
     :: (Eq k, Hashable k) => Fold v r -> Vector (k, v) -> Vector (k, r)
