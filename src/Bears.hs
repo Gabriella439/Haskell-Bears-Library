@@ -13,7 +13,7 @@ module Bears where
 
 import Control.Applicative
 import Control.Exception (throwIO)
-import Data.Csv (FromRecord, HasHeader(..), decode)
+import Data.Csv (FromRecord, HasHeader(..), ToRecord, decode, encode)
 import Data.List (foldl')
 import Data.Functor.Constant (Constant(..))
 import Data.Discrimination hiding (group)
@@ -99,21 +99,25 @@ instance Applicative (Aggregate a) where
 
         summarize (P l r) = summarizeL l (summarizeR r)
 
-loadFile :: FromRecord a => HasHeader -> FilePath -> IO (Unindexed a)
-loadFile header path = do
+fromFile :: FromRecord a => HasHeader -> FilePath -> IO (Unindexed a)
+fromFile header path = do
     bs <- ByteString.readFile path
     case decode header bs of
         Left  str -> throwIO (userError str)
         Right v   -> return (Unindexed (Foldable.toList v))
 
-loadUrl :: FromRecord a => HasHeader -> String -> IO (Unindexed a)
-loadUrl header url = do
+fromURL :: FromRecord a => HasHeader -> String -> IO (Unindexed a)
+fromURL header url = do
     request <- HTTP.parseUrl "https://www.example.com"
     manager <- HTTP.newManager HTTP.tlsManagerSettings
     response <- HTTP.httpLbs request manager
     case decode header (HTTP.responseBody response) of
         Left  str -> throwIO (userError str)
         Right v   -> return (Unindexed (Foldable.toList v))
+
+toFile :: ToRecord a => FilePath -> Unindexed a -> IO ()
+toFile path (Unindexed xs) = do
+    ByteString.writeFile path (encode xs)
 
 group :: (Ord k, Sorting k) => Unindexed (k, v) -> Indexed k v
 group (Unindexed kvs) = Indexed
