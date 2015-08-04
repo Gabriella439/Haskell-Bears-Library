@@ -15,8 +15,12 @@ library
   hs-source-dirs:      src
   exposed-modules:     Bears
   build-depends:       base >= 4.7 && < 5
+                     , bytestring
+                     , cassava
                      , containers
                      , discrimination
+                     , http-client
+                     , http-client-tls
                      , lens-family-core
                      , transformers
   default-language:    Haskell2010

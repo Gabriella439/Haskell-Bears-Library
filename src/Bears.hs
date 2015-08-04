@@ -12,6 +12,8 @@
 module Bears where
 
 import Control.Applicative
+import Control.Exception (throwIO)
+import Data.Csv (FromRecord, HasHeader(..), decode)
 import Data.List (foldl')
 import Data.Functor.Constant (Constant(..))
 import Data.Discrimination hiding (group)
@@ -22,8 +24,12 @@ import Lens.Family.Stock
 import GHC.Exts (IsList(..))
 import Prelude hiding (group, length, lookup, sum)
 
-import qualified Data.Set as Set
-import qualified Data.Map.Strict as Map
+import qualified Data.ByteString.Lazy    as ByteString
+import qualified Data.Foldable           as Foldable
+import qualified Data.Map.Strict         as Map
+import qualified Data.Set                as Set
+import qualified Network.HTTP.Client     as HTTP
+import qualified Network.HTTP.Client.TLS as HTTP
 
 data Keys k = All | Some (Set k)
 
@@ -92,6 +98,22 @@ instance Applicative (Aggregate a) where
         tally a = P (tallyL a) (tallyR a)
 
         summarize (P l r) = summarizeL l (summarizeR r)
+
+loadFile :: FromRecord a => HasHeader -> FilePath -> IO (Unindexed a)
+loadFile header path = do
+    bs <- ByteString.readFile path
+    case decode header bs of
+        Left  str -> throwIO (userError str)
+        Right v   -> return (Unindexed (Foldable.toList v))
+
+loadUrl :: FromRecord a => HasHeader -> String -> IO (Unindexed a)
+loadUrl header url = do
+    request <- HTTP.parseUrl "https://www.example.com"
+    manager <- HTTP.newManager HTTP.tlsManagerSettings
+    response <- HTTP.httpLbs request manager
+    case decode header (HTTP.responseBody response) of
+        Left  str -> throwIO (userError str)
+        Right v   -> return (Unindexed (Foldable.toList v))
 
 group :: (Ord k, Sorting k) => Unindexed (k, v) -> Indexed k v
 group (Unindexed kvs) = Indexed
@@ -162,24 +184,3 @@ length = Aggregate (\_ -> Sum 1) getSum
 -}
 sum :: Num n => Aggregate n n
 sum = Aggregate Sum getSum
-
-names :: Indexed Int (String, String)
-names = group
-    [ (0, ("Gabriel", "Gonzalez"))
-    , (1, ("Oscar"  , "Boykin"  ))
-    , (2, ("Edgar"  , "Codd"    ))
-    ]
-
-accounts :: Indexed Int String
-accounts = group
-    [ (0, "GabrielG439")
-    , (1, "posco"      )
-    , (3, "avibryant"  )
-    ]
-
-{-|
->>> example
-group [(0,(("Gabriel","Gonzalez"),Just "GabrielG439")),(1,(("Oscar","Boykin"),Just "posco")),(2,(("Edgar","Codd"),Nothing))]
--}
-example :: Indexed Int ((String, String), Maybe String)
-example = liftA2 (,) names (optional accounts)
