@@ -51,7 +51,7 @@ instance Ord k => Num (Keys k) where
     ks      * All     = ks
     Some s1 * Some s2 = Some (Set.intersection s1 s2)
 
-data Indexed k v = Indexed { keys :: Keys k, lookup :: k -> Maybe [v] }
+data Indexed k v = Indexed { keys :: Keys k, lookup :: k -> Maybe (Vector v) }
 
 instance (Show k, Show v) => Show (Indexed k v) where
     show i = case scatter i of
@@ -76,11 +76,15 @@ group kvs = Indexed
     , lookup = \k -> HashMap.lookup k m
     }
   where
-    m = HashMap.fromListWith (++) (map (\(k, v) -> (k, [v])) (Vector.toList kvs))
+    m = fmap Vector.fromList (HashMap.fromListWith (++) (map (\(k, v) -> (k, [v])) (Vector.toList kvs)))
 
 scatter :: Indexed k v -> Maybe (Vector (k, v))
-scatter (Indexed (Some s) f) =
-    Just (Vector.fromList [ (k, v) | k <- Set.toList s, Just vs <- [f k], v <- vs ])
+scatter (Indexed (Some s) f) = Just vec1
+  where
+    vec0 = Vector.fromList (Set.toList s)
+    vec1 = Vector.concatMap (\k -> case f k of
+        Nothing -> Vector.empty
+        Just vs -> Vector.map (\v -> (k, v)) vs ) vec0
 scatter  _                   = Nothing
 
 {-|
