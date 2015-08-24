@@ -1,109 +1,160 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE OverloadedLists            #-}
-{-# LANGUAGE TypeFamilies               #-}
+{-# LANGUAGE DeriveFunctor              #-}
+{-# LANGUAGE DeriveFoldable             #-}
+{-# LANGUAGE DeriveTraversable          #-}
 {-# OPTIONS_GHC -fno-warn-missing-methods #-}
-
-{-|
->>> :set -XOverloadedLists
->>> import qualified Control.Foldl as Fold
--}
+{-# OPTIONS_GHC -fno-warn-orphans         #-}
 
 module Bears (
-      module Bears
-    , encode
-    , decode
+    -- * GroupBy
+      GroupBy
+    , Single
+
+    -- * Construction
+    , fromList
+    , fromMap
+
+    -- * Transformation
+    , filter
+    , fold
+    , scan
+
+    -- * Elimination
+    , toList
     ) where
 
 import Control.Applicative
-import Control.Exception (throwIO)
 import Control.Foldl (Fold(..))
-import Data.Csv (FromRecord, HasHeader(..), ToRecord, decode, encode)
-import Data.Functor.Constant (Constant(..))
-import Data.Hashable (Hashable)
-import Data.List (foldl')
-import Data.Map.Strict (Map)
-import Data.Monoid (Sum(..))
+import Control.Monad (MonadPlus(..))
+import Control.Monad.Trans.State (state, evalState)
+import Data.Map (Map)
 import Data.Set (Set)
-import Data.Vector (Vector)
-import Lens.Family.Stock
-import GHC.Exts (IsList(..))
-import Prelude hiding (group, lookup)
+import Prelude hiding (filter, lookup)
 
 import qualified Control.Foldl           as Fold
-import qualified Data.ByteString.Lazy    as ByteString
 import qualified Data.Foldable           as Foldable
-import qualified Data.HashMap.Strict     as HashMap
+import qualified Data.Map                as Map
 import qualified Data.Set                as Set
-import qualified Data.Vector             as Vector
-import qualified Network.HTTP.Client     as HTTP
-import qualified Network.HTTP.Client.TLS as HTTP
 
-data Keys k = All | Some (Set k)
+instance Num Bool where
+    fromInteger 0         = False
+    fromInteger n | n > 0 = True
+
+    (+) = (||)
+    (*) = (&&)
+
+instance Num b => Num (a -> b) where
+    fromInteger n = pure (fromInteger n)
+
+    negate = fmap negate
+    abs    = fmap abs
+    signum = fmap signum
+
+    (+) = liftA2 (+)
+    (*) = liftA2 (*)
+
+data Keys k = All (k -> Bool) | Some (Set k)
 
 instance Ord k => Num (Keys k) where
     fromInteger 0         = Some Set.empty
-    fromInteger n | n > 0 = All
+    fromInteger n | n > 0 = All 1
 
-    All     + _       = All
-    _       + All     = All
-    Some s1 + Some s2 = Some (Set.union s1 s2)
+    All  x + All  y = All  (                x +                 y)
+    Some x + All  y = All  (flip Set.member x +                 y)
+    All  x + Some y = All  (                x + flip Set.member y)
+    Some x + Some y = Some (Set.union x y)
 
-    All     * ks      = ks
-    ks      * All     = ks
-    Some s1 * Some s2 = Some (Set.intersection s1 s2)
+    All  x * All  y = All  (x * y)
+    All  x * Some y = Some (Set.filter x y)
+    Some x * All  y = Some (Set.filter y x)
+    Some x * Some y = Some (Set.intersection x y)
 
-data Indexed k v = Indexed { keys :: Keys k, lookup :: k -> Maybe (Vector v) }
+-- | A collection that holds a `Single` value
+newtype Single a = Single a deriving (Functor, Foldable, Traversable, Show)
 
-instance (Show k, Show v) => Show (Indexed k v) where
-    show i = case scatter i of
-        Just u -> "group " ++ show u
+instance Applicative Single where
+    pure = Single
 
-instance Functor (Indexed k) where
-    fmap f (Indexed s k) = Indexed s (fmap (fmap (fmap f)) k)
+    Single f <*> Single x = Single (f x)
 
-instance Ord k => Applicative (Indexed k) where
-    pure v = Indexed 1 (pure (pure (pure v)))
+{-| A data set grouped by some key
 
-    Indexed s1 f1 <*> Indexed s2 f2 = Indexed (s1 * s2) (liftA2 (liftA2 (<*>)) f1 f2)
+    Think of this as conceptually:
 
-instance Ord k => Alternative (Indexed k) where
-    empty = Indexed 0 (pure empty)
+> GroupBy k f v  ~  [(k, f v)]
 
-    Indexed s1 f1 <|> Indexed s2 f2 = Indexed (s1 + s2) (liftA2 (<|>) f1 f2)
+    * @k@: the type of the key
 
-group :: (Ord k, Hashable k) => Vector (k, v) -> Indexed k v
-group kvs = Indexed
-    { keys   = Some (Set.fromList (Vector.toList (Vector.map fst kvs)))
-    , lookup = \k -> HashMap.lookup k m
+    * @f@: the number of values in each group
+
+    * @v@: the type of the value
+-}
+data GroupBy k f v = GroupBy { keys :: Keys k, lookup :: k -> f v }
+
+instance Functor f => Functor (GroupBy k f) where
+    fmap f (GroupBy s k) = GroupBy s (fmap (fmap f) k)
+
+instance (Ord k, Applicative f) => Applicative (GroupBy k f) where
+    pure v = GroupBy 1 (pure (pure v))
+
+    GroupBy s1 f1 <*> GroupBy s2 f2 = GroupBy (s1 * s2) (liftA2 (<*>) f1 f2)
+
+instance (Ord k, Alternative f) => Alternative (GroupBy k f) where
+    empty = GroupBy 0 (pure empty)
+
+    GroupBy s1 f1 <|> GroupBy s2 f2 = GroupBy (s1 + s2) (liftA2 (<|>) f1 f2)
+
+-- | Convert a list to a `GroupBy`
+fromList :: (Ord k, Alternative f) => [(k, v)] -> GroupBy k f v
+fromList kvs = GroupBy
+    { keys   = Some (Set.fromList (fmap fst kvs))
+    , lookup = \k -> foldr cons empty [ fv | (k', fv) <- kvs, k == k' ]
     }
   where
-    m = fmap Vector.fromList (HashMap.fromListWith (++) (map (\(k, v) -> (k, [v])) (Vector.toList kvs)))
+    cons a as = pure a <|> as
 
-scatter :: Indexed k v -> Maybe (Vector (k, v))
-scatter (Indexed (Some s) f) = Just vec1
+-- | Convert a `Map` to a `GroupBy`
+fromMap :: (Ord k, Alternative f) => Map k v -> GroupBy k f v
+fromMap m = GroupBy
+    { keys   = Some (Set.fromList (Map.keys m))
+    , lookup = \k -> case Map.lookup k m of
+        Nothing -> empty
+        Just v  -> pure v
+    }
+
+-- | Only keep values that satisfy the given predicate
+filter :: MonadPlus f => (v -> Bool) -> GroupBy k f v -> GroupBy k f v
+filter predicate (GroupBy s f) = GroupBy s f'
   where
-    vec0 = Vector.fromList (Set.toList s)
-    vec1 = Vector.concatMap (\k -> case f k of
-        Nothing -> Vector.empty
-        Just vs -> Vector.map (\v -> (k, v)) vs ) vec0
-scatter  _                   = Nothing
+    f' = fmap (_filter predicate) f
 
-{-|
->>> aggregate Fold.sum [(1,1),(2,2),(1,3)]
-fromList [(1,4),(2,2)]
+_filter :: MonadPlus f => (v -> Bool) -> f v -> f v
+_filter predicate vs = do
+    v <- vs
+    if predicate v then return v else mzero
+
+-- | Reduce each group to a `Single` value
+fold :: Foldable f => Fold v r -> GroupBy k f v -> GroupBy k Single r
+fold fvr (GroupBy s f) = GroupBy s f'
+  where
+    f' = fmap (Single . Fold.fold fvr) f
+
+-- | Transform each element of a group using scan derived from a `Fold`
+scan :: Traversable f => Fold a b -> GroupBy k f a -> GroupBy k f b
+scan fab (GroupBy s f) = GroupBy s f'
+  where
+    f' = fmap (_scan fab) f
+
+-- This belongs upstream in `foldl`
+_scan :: Traversable f => Fold a b -> f a -> f b
+_scan (Fold step begin done) as =
+    evalState (traverse (\a -> state (\x -> let y = step x a in (done y, y))) as) begin
+
+{-| Convert a `GroupBy` to a list
+
+    Returns `Nothing` if the `GroupBy` represents a function instead of a `Set`
 -}
-aggregate
-    :: (Eq k, Hashable k) => Fold v r -> Vector (k, v) -> Vector (k, r)
-aggregate (Fold step begin done) kvs = 
-    Vector.fromList
-        (HashMap.toList (fmap done (Vector.foldl' step' HashMap.empty kvs)))
-  where
-    step' m (k, v) = case HashMap.lookup k m of
-        Nothing -> HashMap.insert k (step begin v) m
-        Just x  -> HashMap.insert k (step x     v) m
-
-fold :: Fold a b -> Vector a -> b
-fold = Fold.fold 
-
-scan :: Fold a b -> Vector a -> Vector b
-scan (Fold step begin done) as = Vector.map done (Vector.scanl' step begin as)
+toList :: Foldable f => GroupBy k f v -> Maybe [(k, v)]
+toList (GroupBy (Some s) f) =
+    Just [ (k, v) | k <- Set.toList s, v <- Foldable.toList (f k) ]
+toList  _                   =
+    Nothing

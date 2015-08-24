@@ -15,17 +15,9 @@ library
   hs-source-dirs:      src
   exposed-modules:     Bears
   build-depends:       base >= 4.7 && < 5
-                     , bytestring
-                     , cassava
                      , containers
                      , foldl
-                     , hashable
-                     , http-client
-                     , http-client-tls
-                     , lens-family-core
                      , transformers
-                     , unordered-containers
-                     , vector
   default-language:    Haskell2010
 
 test-suite bears-test
