@@ -74,6 +74,10 @@ module Bears (
 
     -- * Transformation
     , filter
+    , gt
+    , ge
+    , lt
+    , le
     , fold
     , scan
     , optional
@@ -196,6 +200,56 @@ _filter :: MonadPlus f => (v -> Bool) -> f v -> f v
 _filter predicate vs = do
     v <- vs
     if predicate v then return v else mzero
+
+-- | Filter out all groups whose key is greater than the given key
+gt :: (Ord k, Alternative f) => k -> GroupBy k f v -> GroupBy k f v
+gt k (GroupBy (Some s0) f) = GroupBy (Some s1) f'
+  where
+    (_, _, s1) = Set.splitMember k s0
+
+    f' k' = if k < k' then f k' else empty
+gt k (GroupBy (All  g ) f) = GroupBy (All  g') f'
+  where
+    g' k' = k < k' && g k
+    f' k' = if k < k' then f k' else empty
+
+-- | Filter out all groups whose key is greater than or equal to the given key
+ge :: (Ord k, Alternative f) => k -> GroupBy k f v -> GroupBy k f v
+ge k (GroupBy (Some s0) f) = GroupBy (Some s2) f'
+  where
+    (_, b, s1) = Set.splitMember k s0
+    s2 = if b then Set.insert k s1 else s1
+
+    f' k' = if k <= k' then f k' else empty
+ge k (GroupBy (All  g ) f) = GroupBy (All  g') f'
+  where
+    g' k' = k <= k' && g k
+    f' k' = if k <= k' then f k' else empty
+
+-- | Filter out all groups whose key is less than the given key
+lt :: (Ord k, Alternative f) => k -> GroupBy k f v -> GroupBy k f v
+lt k (GroupBy (Some s0) f) = GroupBy (Some s1) f'
+  where
+    (s1, _, _) = Set.splitMember k s0
+
+    f' k' = if k' < k then f k' else empty
+lt k (GroupBy (All  g ) f) = GroupBy (All  g') f'
+  where
+    g' k' = k' < k && g k
+    f' k' = if k' < k then f k' else empty
+
+-- | Filter out all groups whose key is less than or equal to the given key
+le :: (Ord k, Alternative f) => k -> GroupBy k f v -> GroupBy k f v
+le k (GroupBy (Some s0) f) = GroupBy (Some s2) f'
+  where
+    (s1, b, _) = Set.splitMember k s0
+    s2 = if b then Set.insert k s1 else s1
+
+    f' k' = if k' <= k then f k' else empty
+le k (GroupBy (All  g ) f) = GroupBy (All  g') f'
+  where
+    g' k' = k' <= k && g k
+    f' k' = if k' <= k then f k' else empty
 
 -- | Reduce each group to a `Single` value
 fold :: Foldable f => Fold v r -> GroupBy k f v -> GroupBy k Single r
