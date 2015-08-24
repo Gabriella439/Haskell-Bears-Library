@@ -1,8 +1,42 @@
-{-# LANGUAGE DeriveFunctor              #-}
-{-# LANGUAGE DeriveFoldable             #-}
-{-# LANGUAGE DeriveTraversable          #-}
+{-# LANGUAGE DeriveFunctor     #-}
+{-# LANGUAGE DeriveFoldable    #-}
+{-# LANGUAGE DeriveTraversable #-}
 {-# OPTIONS_GHC -fno-warn-missing-methods #-}
 {-# OPTIONS_GHC -fno-warn-orphans         #-}
+
+{-| Example usage:
+
+>>> let xs = fromList [(0, "Gabriel"), (1, "Oscar"), (2, "Edgar")] :: GroupBy Int Maybe String
+>>> let ys = fromList [(0, "GabrielG439"), (1, "posco"), (3, "avibryant")] :: GroupBy Int Maybe String
+
+    Inner join:
+
+>>> toList ((,) <$> xs <*> ys)
+Just [(0,("Gabriel","GabrielG439")),(1,("Oscar","posco"))]
+
+    Left join:
+
+>>> toList ((,) <$> xs <*> optional ys)
+Just [(0,("Gabriel",Just "GabrielG439")),(1,("Oscar",Just "posco")),(2,("Edgar",Nothing))]
+
+    Right join:
+
+>>> toList ((,) <$> optional xs <*> ys)
+Just [(0,(Just "Gabriel","GabrielG439")),(1,(Just "Oscar","posco")),(3,(Nothing,"avibryant"))]
+
+    Choice:
+
+>>> toList (xs <|> ys)
+Just [(0,"Gabriel"),(1,"Oscar"),(2,"Edgar"),(3,"avibryant")]
+
+    Concatenation (Note the new types for @xs@ and @ys@):
+
+>>> let xs = fromList [(0, "Gabriel"), (1, "Oscar"), (2, "Edgar")] :: GroupBy Int [] String
+>>> let ys = fromList [(0, "GabrielG439"), (1, "posco"), (3, "avibryant")] :: GroupBy Int [] String
+>>> toList (xs <|> ys)
+Just [(0,"Gabriel"),(0,"GabrielG439"),(1,"Oscar"),(1,"posco"),(2,"Edgar"),(3,"avibryant")]
+
+-}
 
 module Bears (
     -- * GroupBy
@@ -17,8 +51,10 @@ module Bears (
     , filter
     , fold
     , scan
+    , optional
 
     -- * Elimination
+    , lookup
     , toList
     ) where
 
@@ -76,9 +112,10 @@ instance Applicative Single where
 
     Single f <*> Single x = Single (f x)
 
-{-| A data set grouped by some key
+{-| A data set where values are grouped by keys
 
-    Think of this as conceptually:
+    Think of this as conceptually associating each key with a collection of
+    values:
 
 > GroupBy k f v  ~  [(k, f v)]
 
@@ -88,7 +125,11 @@ instance Applicative Single where
 
     * @v@: the type of the value
 -}
-data GroupBy k f v = GroupBy { keys :: Keys k, lookup :: k -> f v }
+data GroupBy k f v = GroupBy
+    { keys :: Keys k
+    , lookup :: k -> f v 
+    -- ^ Find all values that match the given key
+    }
 
 instance Functor f => Functor (GroupBy k f) where
     fmap f (GroupBy s k) = GroupBy s (fmap (fmap f) k)
