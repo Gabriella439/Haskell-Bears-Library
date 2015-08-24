@@ -24,17 +24,42 @@ Just [(0,("Gabriel",Just "GabrielG439")),(1,("Oscar",Just "posco")),(2,("Edgar",
 >>> toList ((,) <$> optional xs <*> ys)
 Just [(0,(Just "Gabriel","GabrielG439")),(1,(Just "Oscar","posco")),(3,(Nothing,"avibryant"))]
 
+    Indexing:
+
+>>> lookup 0 xs
+Just "Gabriel"
+>>> lookup 0 ((,) <$> xs <*> ys)
+Just ("Gabriel","GabrielG439")
+
     Choice:
 
 >>> toList (xs <|> ys)
 Just [(0,"Gabriel"),(1,"Oscar"),(2,"Edgar"),(3,"avibryant")]
 
-    Concatenation (Note the new types for @xs@ and @ys@):
+    Concatenation (note the new types for @xs@ and @ys@):
 
 >>> let xs = fromList [(0, "Gabriel"), (1, "Oscar"), (2, "Edgar")] :: GroupBy Int [] String
 >>> let ys = fromList [(0, "GabrielG439"), (1, "posco"), (3, "avibryant")] :: GroupBy Int [] String
 >>> toList (xs <|> ys)
 Just [(0,"Gabriel"),(0,"GabrielG439"),(1,"Oscar"),(1,"posco"),(2,"Edgar"),(3,"avibryant")]
+
+    Folds:
+
+>>> import qualified Control.Foldl as Fold
+>>> toList (fold Fold.length (xs <|> ys))
+Just [(0,2),(1,2),(2,1),(3,1)]
+>>> toList (fold Fold.list (xs <|> ys))
+Just [(0,["Gabriel","GabrielG439"]),(1,["Oscar","posco"]),(2,["Edgar"]),(3,["avibryant"])]
+
+    Intermediate data sets are generated lazily:
+
+>>> let ns = fromList [ (x, x) | x <- [0..] ] :: GroupBy Int Maybe Int
+>>> lookup 2 ns
+Just 2
+>>> lookup 2 ((,) <$> ns <*> ns)
+Just (2,2)
+>>> lookup 2 (filter odd ns)
+Nothing
 
 -}
 
@@ -126,9 +151,8 @@ instance Applicative Single where
     * @v@: the type of the value
 -}
 data GroupBy k f v = GroupBy
-    { keys :: Keys k
-    , lookup :: k -> f v 
-    -- ^ Find all values that match the given key
+    { _keys :: Keys k
+    , _lookup :: k -> f v 
     }
 
 instance Functor f => Functor (GroupBy k f) where
@@ -147,8 +171,8 @@ instance (Ord k, Alternative f) => Alternative (GroupBy k f) where
 -- | Convert a list to a `GroupBy`
 fromList :: (Ord k, Alternative f) => [(k, v)] -> GroupBy k f v
 fromList kvs = GroupBy
-    { keys   = Some (Set.fromList (fmap fst kvs))
-    , lookup = \k -> foldr cons empty [ fv | (k', fv) <- kvs, k == k' ]
+    { _keys   = Some (Set.fromList (fmap fst kvs))
+    , _lookup = \k -> foldr cons empty [ fv | (k', fv) <- kvs, k == k' ]
     }
   where
     cons a as = pure a <|> as
@@ -156,8 +180,8 @@ fromList kvs = GroupBy
 -- | Convert a `Map` to a `GroupBy`
 fromMap :: (Ord k, Alternative f) => Map k v -> GroupBy k f v
 fromMap m = GroupBy
-    { keys   = Some (Set.fromList (Map.keys m))
-    , lookup = \k -> case Map.lookup k m of
+    { _keys   = Some (Set.fromList (Map.keys m))
+    , _lookup = \k -> case Map.lookup k m of
         Nothing -> empty
         Just v  -> pure v
     }
@@ -189,6 +213,10 @@ scan fab (GroupBy s f) = GroupBy s f'
 _scan :: Traversable f => Fold a b -> f a -> f b
 _scan (Fold step begin done) as =
     evalState (traverse (\a -> state (\x -> let y = step x a in (done y, y))) as) begin
+
+-- | Find all values that match the given key
+lookup :: k -> GroupBy k f v -> f v
+lookup k g = _lookup g k
 
 {-| Convert a `GroupBy` to a list
 
