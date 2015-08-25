@@ -79,6 +79,7 @@ module Bears (
     -- * Elimination
     , lookup
     , toList
+    , toMap
     ) where
 
 import Control.Applicative
@@ -305,9 +306,18 @@ lookup k g = _lookup g k
 {-| Convert a `GroupBy` to a list
 
     Returns `Nothing` if the `GroupBy` represents a function instead of a `Set`
+    keys
 -}
 toList :: Foldable f => GroupBy k f v -> Maybe [(k, v)]
 toList (GroupBy (Some s) f) =
     Just [ (k, v) | k <- Set.toList s, v <- Foldable.toList (f k) ]
 toList  _                   =
     Nothing
+
+{-| Convert a `GroupBy` to a `Map`
+
+    Returns `Nothing` if the `GroupBy` represents a function instead of a `Set`
+    of keys
+-}
+toMap :: (Eq k, Foldable f) => GroupBy k f v -> Maybe (Map k v)
+toMap = fmap Map.fromAscList . toList
