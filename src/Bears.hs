@@ -43,15 +43,7 @@ Just [(0,"Gabriel"),(1,"Oscar"),(2,"Edgar"),(3,"avibryant")]
 >>> toList (xs <|> ys)
 Just [(0,"Gabriel"),(0,"GabrielG439"),(1,"Oscar"),(1,"posco"),(2,"Edgar"),(3,"avibryant")]
 
-    Folds:
-
->>> import qualified Control.Foldl as Fold
->>> toList (fold Fold.length (xs <|> ys))
-Just [(0,2),(1,2),(2,1),(3,1)]
->>> toList (fold Fold.list (xs <|> ys))
-Just [(0,["Gabriel","GabrielG439"]),(1,["Oscar","posco"]),(2,["Edgar"]),(3,["avibryant"])]
-
-    Intermediate data sets are generated lazily:
+    Intermediate data sets are generated lazily, even if they are infinite:
 
 >>> let ns = fromList [ (x, x) | x <- [0..] ] :: GroupBy Int Maybe Int
 >>> lookup 2 ns
@@ -73,6 +65,7 @@ module Bears (
     , fromMap
 
     -- * Transformation
+    , insert
     , filter
     , gt
     , ge
@@ -190,6 +183,20 @@ fromMap m = GroupBy
         Just v  -> pure v
     }
 
+{-| Insert a key-value pair
+
+>>> let xs = fromList [('A', 1)] :: GroupBy Char [] Int
+>>> toList (insert 'B' 2 xs)
+Just [('A',1),('B',2)]
+
+    For bulk updates you should instead use `fromList` and `(<|>)`
+
+>>> toList (fromList [('B', 2), ('C', 3)] <|> xs)
+Just [('A',1),('B',2),('C',3)]
+-}
+insert :: (Ord k, Alternative f) => k -> v -> GroupBy k f v -> GroupBy k f v
+insert k v g = fromList [(k, v)] <|> g
+
 -- | Only keep values that satisfy the given predicate
 filter :: MonadPlus f => (v -> Bool) -> GroupBy k f v -> GroupBy k f v
 filter predicate (GroupBy s f) = GroupBy s f'
@@ -251,7 +258,17 @@ le k (GroupBy (All  g ) f) = GroupBy (All  g') f'
     g' k' = k' <= k && g k
     f' k' = if k' <= k then f k' else empty
 
--- | Reduce each group to a `Single` value
+{-| Reduce each group to a `Single` value
+
+>>> import qualified Control.Foldl as Fold
+>>> let xs = fromList [('A', 1), ('A', 2), ('A', 3), ('B', 4), ('B', 5), ('C', 6)] :: GroupBy Char [] Int
+>>> toList (fold Fold.sum xs)
+Just [('A',6),('B',9),('C',6)]
+>>> toList (fold Fold.length xs)
+Just [('A',3),('B',2),('C',1)]
+>>> toList (fold Fold.list xs)
+Just [('A',[1,2,3]),('B',[4,5]),('C',[6])]
+-}
 fold :: Foldable f => Fold v r -> GroupBy k f v -> GroupBy k Single r
 fold fvr (GroupBy s f) = GroupBy s f'
   where
