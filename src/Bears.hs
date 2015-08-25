@@ -92,6 +92,7 @@ import Prelude hiding (filter, lookup)
 
 import qualified Control.Foldl           as Fold
 import qualified Data.Foldable           as Foldable
+import qualified Data.List
 import qualified Data.Map                as Map
 import qualified Data.Set                as Set
 
@@ -234,9 +235,16 @@ _scan (Fold step begin done) as =
 Just [('A',0),('A',1),('B',2),('B',3)]
 -}
 flatten :: Monad f => GroupBy k f (f v) -> GroupBy k f v
-flatten (GroupBy s f) = GroupBy s f'
-  where
-    f' k = join (f k)
+flatten (GroupBy s f) = GroupBy s (fmap join f)
+
+{-| Sort each group
+
+>>> let xs = fromList [('A', 2), ('A', 1), ('B', 4), ('B', 3)]
+>>> toList (sort xs)
+Just [('A',1),('A',2),('B',3),('B',4)]
+-}
+sort :: Ord v => GroupBy k [] v -> GroupBy k [] v
+sort (GroupBy s f) = GroupBy s (fmap Data.List.sort f)
 
 -- | Only keep values that satisfy the given predicate
 filter :: MonadPlus f => (v -> Bool) -> GroupBy k f v -> GroupBy k f v
