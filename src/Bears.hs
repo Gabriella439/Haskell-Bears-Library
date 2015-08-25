@@ -66,13 +66,14 @@ module Bears (
 
     -- * Transformation
     , insert
+    , fold
+    , scan
+    , flatten
     , filter
     , gt
     , ge
     , lt
     , le
-    , fold
-    , scan
     , optional
 
     -- * Elimination
@@ -82,7 +83,7 @@ module Bears (
 
 import Control.Applicative
 import Control.Foldl (Fold(..))
-import Control.Monad (MonadPlus(..))
+import Control.Monad (MonadPlus(..), join)
 import Control.Monad.Trans.State (state, evalState)
 import Data.Map (Map)
 import Data.Set (Set)
@@ -189,13 +190,52 @@ fromMap m = GroupBy
 >>> toList (insert 'B' 2 xs)
 Just [('A',1),('B',2)]
 
-    For bulk updates you should instead use `fromList` and `(<|>)`
+    For bulk updates you should instead use `fromList` and (`<|>`)
 
 >>> toList (fromList [('B', 2), ('C', 3)] <|> xs)
 Just [('A',1),('B',2),('C',3)]
 -}
 insert :: (Ord k, Alternative f) => k -> v -> GroupBy k f v -> GroupBy k f v
 insert k v g = fromList [(k, v)] <|> g
+
+{-| Reduce each group to a `Single` value
+
+>>> import qualified Control.Foldl as Fold
+>>> let xs = fromList [('A', 1), ('A', 2), ('A', 3), ('B', 4), ('B', 5), ('C', 6)] :: GroupBy Char [] Int
+>>> toList (fold Fold.sum xs)
+Just [('A',6),('B',9),('C',6)]
+>>> toList (fold Fold.length xs)
+Just [('A',3),('B',2),('C',1)]
+>>> toList (fold Fold.list xs)
+Just [('A',[1,2,3]),('B',[4,5]),('C',[6])]
+-}
+fold :: Foldable f => Fold v r -> GroupBy k f v -> GroupBy k Single r
+fold fvr (GroupBy s f) = GroupBy s f'
+  where
+    f' = fmap (Single . Fold.fold fvr) f
+
+-- | Transform each element of a group using scan derived from a `Fold`
+scan :: Traversable f => Fold a b -> GroupBy k f a -> GroupBy k f b
+scan fab (GroupBy s f) = GroupBy s f'
+  where
+    f' = fmap (_scan fab) f
+
+-- This belongs upstream in `foldl`
+_scan :: Traversable f => Fold a b -> f a -> f b
+_scan (Fold step begin done) as =
+    evalState (traverse (\a -> state (\x -> let y = step x a in (done y, y))) as) begin
+
+{-| If each value is a collection of the same type as the surrounding group,
+    flatten the two collections
+
+>>> let xs = fromList [('A', [0, 1]), ('B', [2, 3])] :: GroupBy Char [] [Int]
+>>> toList (flatten xs)
+Just [('A',0),('A',1),('B',2),('B',3)]
+-}
+flatten :: Monad f => GroupBy k f (f v) -> GroupBy k f v
+flatten (GroupBy s f) = GroupBy s f'
+  where
+    f' k = join (f k)
 
 -- | Only keep values that satisfy the given predicate
 filter :: MonadPlus f => (v -> Bool) -> GroupBy k f v -> GroupBy k f v
@@ -257,33 +297,6 @@ le k (GroupBy (All  g ) f) = GroupBy (All  g') f'
   where
     g' k' = k' <= k && g k
     f' k' = if k' <= k then f k' else empty
-
-{-| Reduce each group to a `Single` value
-
->>> import qualified Control.Foldl as Fold
->>> let xs = fromList [('A', 1), ('A', 2), ('A', 3), ('B', 4), ('B', 5), ('C', 6)] :: GroupBy Char [] Int
->>> toList (fold Fold.sum xs)
-Just [('A',6),('B',9),('C',6)]
->>> toList (fold Fold.length xs)
-Just [('A',3),('B',2),('C',1)]
->>> toList (fold Fold.list xs)
-Just [('A',[1,2,3]),('B',[4,5]),('C',[6])]
--}
-fold :: Foldable f => Fold v r -> GroupBy k f v -> GroupBy k Single r
-fold fvr (GroupBy s f) = GroupBy s f'
-  where
-    f' = fmap (Single . Fold.fold fvr) f
-
--- | Transform each element of a group using scan derived from a `Fold`
-scan :: Traversable f => Fold a b -> GroupBy k f a -> GroupBy k f b
-scan fab (GroupBy s f) = GroupBy s f'
-  where
-    f' = fmap (_scan fab) f
-
--- This belongs upstream in `foldl`
-_scan :: Traversable f => Fold a b -> f a -> f b
-_scan (Fold step begin done) as =
-    evalState (traverse (\a -> state (\x -> let y = step x a in (done y, y))) as) begin
 
 -- | Find all values that match the given key
 lookup :: k -> GroupBy k f v -> f v
