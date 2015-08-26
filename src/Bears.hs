@@ -62,7 +62,6 @@ module Bears (
 
     -- * Construction
     , fromList
-    , fromList_
     , fromMap
 
     -- * Transformation
@@ -177,13 +176,6 @@ fromList kvs = GroupBy
     }
   where
     cons a as = pure a <|> as
-
-{-| Convert a list to a `GroupBy` with just one bucket
-
-> fromList_ xs = fromList [ ((), x) | x <- xs ]
--}
-fromList_ :: Alternative f => [v] -> GroupBy () f v
-fromList_ xs = fromList [ ((), x) | x <- xs ]
 
 -- | Convert a `Map` to a `GroupBy`
 fromMap :: (Ord k, Alternative f) => Map k v -> GroupBy k f v
