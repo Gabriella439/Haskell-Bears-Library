@@ -56,8 +56,15 @@ Nothing
 -}
 
 module Bears (
+    -- * CSV
+      Csv.HasHeader(..)
+    , readCsv
+    , readNamedCsv
+    , writeCsv
+    , writeNamedCsv
+
     -- * GroupBy
-      GroupBy
+    , GroupBy
     , Single
 
     -- * Construction
@@ -83,18 +90,59 @@ module Bears (
     ) where
 
 import Control.Applicative
+import Control.Exception (throwIO)
 import Control.Foldl (Fold(..))
 import Control.Monad (MonadPlus(..), join)
 import Control.Monad.Trans.State (state, evalState)
+import Data.ByteString.Lazy (ByteString)
 import Data.Map (Map)
 import Data.Set (Set)
 import Prelude hiding (filter, lookup)
 
-import qualified Control.Foldl           as Fold
-import qualified Data.Foldable           as Foldable
+import qualified Control.Foldl        as Fold
+import qualified Data.ByteString.Lazy as ByteString
+import qualified Data.Csv             as Csv
+import qualified Data.Foldable        as Foldable
 import qualified Data.List
-import qualified Data.Map                as Map
-import qualified Data.Set                as Set
+import qualified Data.Map             as Map
+import qualified Data.Set             as Set
+
+-- | Efficiently deserialize CSV records
+readCsv
+    :: Csv.FromRecord a
+    => Csv.HasHeader
+    -- ^ Data contains header that should be skipped
+    -> FilePath
+    -- ^ Path to CSV file
+    -> IO [a]
+readCsv hasHeader path = do
+    bytes <- ByteString.readFile path
+    case Csv.decode hasHeader bytes of
+        Left str -> throwIO (userError str)
+        Right as -> return (Foldable.toList as)
+
+-- | Efficiently deserialize CSV records.  The data must be preceded by a header
+readNamedCsv
+    :: Csv.FromNamedRecord a
+    => FilePath
+    -- ^ Path to CSV file
+    -> IO (Csv.Header, [a])
+readNamedCsv path = do
+    bytes <- ByteString.readFile path
+    case Csv.decodeByName bytes of
+        Left   str         -> throwIO (userError str)
+        Right (header, as) -> return (header, Foldable.toList as)
+
+-- | Efficiently serialize CSV records
+writeCsv :: Csv.ToRecord a => FilePath -> [a] -> IO ()
+writeCsv path as = ByteString.writeFile path (Csv.encode as)
+
+{-| Efficiently serialize CSV records.  The header is written before any records
+    and dictates the field order.
+-}
+writeNamedCsv :: Csv.ToNamedRecord a => FilePath -> Csv.Header -> [a] -> IO ()
+writeNamedCsv path header as =
+    ByteString.writeFile path (Csv.encodeByName header as)
 
 instance Num Bool where
     fromInteger 0         = False
