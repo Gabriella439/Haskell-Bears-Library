@@ -172,10 +172,10 @@ instance (Ord k, Alternative f) => Alternative (GroupBy k f) where
 fromList :: (Ord k, Alternative f) => [(k, v)] -> GroupBy k f v
 fromList kvs = GroupBy
     { _keys   = Some (Set.fromList (fmap fst kvs))
-    , _lookup = \k -> foldr cons empty [ fv | (k', fv) <- kvs, k == k' ]
+    , _lookup = \k ->
+        let cons (k', v) vs = if k == k' then pure v <|> vs else vs
+        in  foldr cons empty kvs
     }
-  where
-    cons a as = pure a <|> as
 
 -- | Convert a `Map` to a `GroupBy`
 fromMap :: (Ord k, Alternative f) => Map k v -> GroupBy k f v
