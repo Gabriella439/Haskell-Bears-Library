@@ -64,7 +64,7 @@ module Bears (
     , writeNamedCsv
 
     -- * GroupBy
-    , GroupBy
+    , GroupBy(..)
     , Single
 
     -- * Construction
