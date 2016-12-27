@@ -23,24 +23,24 @@ Table {rows = fromList [(0,("Gabriel","GabrielG439")),(1,("Oscar","posco"))], fa
 
     Left join:
 
->>> (,) <$> xs <*> optional ys
+>>> do x <- xs; y <- optional ys; return (x, y)
 Table {rows = fromList [(0,("Gabriel",Just "GabrielG439")),(1,("Oscar",Just "posco")),(2,("Edgar",Nothing))], fallback = Nothing}
 
     Right join:
 
->>> (,) <$> optional xs <*> ys
+>>> do x <- optional xs; y <- ys; return (x, y)
 Table {rows = fromList [(0,(Just "Gabriel","GabrielG439")),(1,(Just "Oscar","posco")),(3,(Nothing,"avibryant"))], fallback = Nothing}
 
     Outer join:
 
->>> (,) <$> optional xs <*> optional ys
+>>> do x <- optional xs; y <- optional ys; return (x, y)
 Table {rows = fromList [(0,(Just "Gabriel",Just "GabrielG439")),(1,(Just "Oscar",Just "posco")),(2,(Just "Edgar",Nothing)),(3,(Nothing,Just "avibryant"))], fallback = Just (Nothing,Nothing)}
 
     Indexing:
 
 >>> lookup 0 xs
 Just "Gabriel"
->>> lookup 0 ((,) <$> xs <*> ys)
+>>> lookup 0 (do x <- xs; y <- ys; return (x, y))
 Just ("Gabriel","GabrielG439")
 
     Choice:
