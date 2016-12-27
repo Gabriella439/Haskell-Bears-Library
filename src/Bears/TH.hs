@@ -1,10 +1,31 @@
 {-# LANGUAGE TemplateHaskell #-}
 
+{-| This module provides the `deriveRow` function, which is provided both for
+    end users of the @bears@ library and also used internally to derive numeric
+    instances for the `R0` through `R4` types
+
+    This function needs to be defined in a separate module from the "Bears" module
+    because you can't use a Template Haskell function in the same module where the
+    function was defined
+-}
+
 module Bears.TH where
 
 import Control.Monad (replicateM)
 import Language.Haskell.TH
 
+{-| This Template Haskell function derives the following instances for a polymorphic
+    record type:
+
+    * `Monoid`
+    * `Num`
+    * `Fractional`
+    * `Floating`
+
+    ... and also provides useful a @transpose{NameOfType}@ function
+ 
+    See the "Bears" module which uses `deriveRow` for the `R0` through `R4` types
+-}
 deriveRow :: Name -> Q [Dec]
 deriveRow name = do
     info <- reify name

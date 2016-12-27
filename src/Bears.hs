@@ -1,8 +1,10 @@
 {-# LANGUAGE ApplicativeDo         #-}
+{-# LANGUAGE CPP                   #-}
 {-# LANGUAGE DeriveFunctor         #-}
 {-# LANGUAGE DeriveFoldable        #-}
 {-# LANGUAGE DeriveTraversable     #-}
 {-# LANGUAGE FlexibleInstances     #-}
+{-# LANGUAGE RecordWildCards       #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TemplateHaskell       #-}
 {-# OPTIONS_GHC -fno-warn-missing-methods #-}
@@ -10,23 +12,29 @@
 
 {-| Example usage:
 
->>> let xs = fromList [(0, "Gabriel"), (1, "Oscar"), (2, "Edgar")] :: GroupBy Int Maybe String
->>> let ys = fromList [(0, "GabrielG439"), (1, "posco"), (3, "avibryant")] :: GroupBy Int Maybe String
+>>> let xs = fromList [(0, "Gabriel"), (1, "Oscar"), (2, "Edgar")]
+>>> let ys = fromList [(0, "GabrielG439"), (1, "posco"), (3, "avibryant")]
 
     Inner join:
 
->>> toList ((,) <$> xs <*> ys)
-Just [(0,("Gabriel","GabrielG439")),(1,("Oscar","posco"))]
+>>> :set -XApplicativeDo
+>>> do x <- xs; y <- ys; return (x, y)
+Table {rows = fromList [(0,("Gabriel","GabrielG439")),(1,("Oscar","posco"))], fallback = Nothing}
 
     Left join:
 
->>> toList ((,) <$> xs <*> optional ys)
-Just [(0,("Gabriel",Just "GabrielG439")),(1,("Oscar",Just "posco")),(2,("Edgar",Nothing))]
+>>> (,) <$> xs <*> optional ys
+Table {rows = fromList [(0,("Gabriel",Just "GabrielG439")),(1,("Oscar",Just "posco")),(2,("Edgar",Nothing))], fallback = Nothing}
 
     Right join:
 
->>> toList ((,) <$> optional xs <*> ys)
-Just [(0,(Just "Gabriel","GabrielG439")),(1,(Just "Oscar","posco")),(3,(Nothing,"avibryant"))]
+>>> (,) <$> optional xs <*> ys
+Table {rows = fromList [(0,(Just "Gabriel","GabrielG439")),(1,(Just "Oscar","posco")),(3,(Nothing,"avibryant"))], fallback = Nothing}
+
+    Outer join:
+
+>>> (,) <$> optional xs <*> optional ys
+Table {rows = fromList [(0,(Just "Gabriel",Just "GabrielG439")),(1,(Just "Oscar",Just "posco")),(2,(Just "Edgar",Nothing)),(3,(Nothing,Just "avibryant"))], fallback = Just (Nothing,Nothing)}
 
     Indexing:
 
@@ -37,25 +45,8 @@ Just ("Gabriel","GabrielG439")
 
     Choice:
 
->>> toList (xs <|> ys)
-Just [(0,"Gabriel"),(1,"Oscar"),(2,"Edgar"),(3,"avibryant")]
-
-    Concatenation (note the new types for @xs@ and @ys@):
-
->>> let xs = fromList [(0, "Gabriel"), (1, "Oscar"), (2, "Edgar")] :: GroupBy Int [] String
->>> let ys = fromList [(0, "GabrielG439"), (1, "posco"), (3, "avibryant")] :: GroupBy Int [] String
->>> toList (xs <|> ys)
-Just [(0,"Gabriel"),(0,"GabrielG439"),(1,"Oscar"),(1,"posco"),(2,"Edgar"),(3,"avibryant")]
-
-    Intermediate data sets are generated lazily, even if they are infinite:
-
->>> let ns = fromList [ (x, x) | x <- [0..] ] :: GroupBy Int Maybe Int
->>> lookup 2 ns
-Just 2
->>> lookup 2 ((,) <$> ns <*> ns)
-Just (2,2)
->>> lookup 2 (filter odd ns)
-Nothing
+>>> xs <|> ys
+Table {rows = fromList [(0,"Gabriel"),(1,"Oscar"),(2,"Edgar"),(3,"avibryant")], fallback = Nothing}
 
 -}
 
@@ -67,33 +58,28 @@ module Bears (
     , writeCsv
     , writeNamedCsv
 
-    -- * GroupBy
-    , GroupBy(..)
-    , Keys(..)
-    , Single(..)
-
-    -- * Construction
+    -- * Table
+    , Table(..)
+    , singleton
     , fromList
-    , fromMap
-
-    -- * Transformation
     , insert
-    , fold
-    , scan
-    , flatten
-    , filter
+    , lookup
     , gt
     , ge
     , lt
     , le
-    , eq
-    , optional
-    , take
+    , filter
 
-    -- * Elimination
-    , lookup
-    , toList
-    , toMap
+    -- * Groups
+    , Groups(..)
+    , groupBy
+    , fold
+
+#if MIN_VERSION_foldl(1,2,2)
+    -- * Description
+    , Description(..)
+    , describe
+#endif
 
     -- * Records
     , R0(..)
@@ -111,6 +97,7 @@ module Bears (
     , module Bears.TH
     , view
     , over
+    , optional
     ) where
 
 import Bears.TH
@@ -118,20 +105,22 @@ import Control.Applicative
 import Control.Exception (throwIO)
 import Control.Foldl (Fold(..))
 import Control.Lens (Field1(..), Field2(..), Field3(..), Field4(..), view, over)
-import Control.Monad (MonadPlus(..), join)
+import Control.Monad (MonadPlus(..), join, mfilter)
 import Control.Monad.Trans.State (state, evalState)
 import Data.ByteString.Lazy (ByteString)
 import Data.Map (Map)
+import Data.Monoid ((<>))
 import Data.Set (Set)
-import Prelude hiding (filter, lookup)
+import Data.Vector (Vector)
+import Prelude hiding (filter, lookup, drop, take)
 
-import qualified Control.Foldl        as Fold
+import qualified Control.Foldl
 import qualified Data.ByteString.Lazy as ByteString
 import qualified Data.Csv             as Csv
-import qualified Data.Foldable        as Foldable
-import qualified Data.List
-import qualified Data.Map             as Map
-import qualified Data.Set             as Set
+import qualified Data.Foldable
+import qualified Data.Map.Strict
+import qualified Data.Sequence
+import qualified Data.Vector
 
 -- | Efficiently deserialize CSV records
 readCsv
@@ -140,296 +129,338 @@ readCsv
     -- ^ Data contains header that should be skipped
     -> FilePath
     -- ^ Path to CSV file
-    -> IO [a]
+    -> IO (Vector a)
 readCsv hasHeader path = do
     bytes <- ByteString.readFile path
     case Csv.decode hasHeader bytes of
         Left str -> throwIO (userError str)
-        Right as -> return (Foldable.toList as)
+        Right as -> return as
 
 -- | Efficiently deserialize CSV records.  The data must be preceded by a header
 readNamedCsv
     :: Csv.FromNamedRecord a
     => FilePath
     -- ^ Path to CSV file
-    -> IO (Csv.Header, [a])
+    -> IO (Csv.Header, Vector a)
 readNamedCsv path = do
     bytes <- ByteString.readFile path
     case Csv.decodeByName bytes of
         Left   str         -> throwIO (userError str)
-        Right (header, as) -> return (header, Foldable.toList as)
+        Right (header, as) -> return (header, as)
 
 -- | Efficiently serialize CSV records
-writeCsv :: Csv.ToRecord a => FilePath -> [a] -> IO ()
-writeCsv path as = ByteString.writeFile path (Csv.encode as)
+writeCsv :: Csv.ToRecord a => FilePath -> Vector a -> IO ()
+writeCsv path as = ByteString.writeFile path (Csv.encode (Data.Foldable.toList as))
 
 {-| Efficiently serialize CSV records.  The header is written before any records
     and dictates the field order.
 -}
-writeNamedCsv :: Csv.ToNamedRecord a => FilePath -> Csv.Header -> [a] -> IO ()
+writeNamedCsv
+    :: Csv.ToNamedRecord a => FilePath -> Csv.Header -> Vector a -> IO ()
 writeNamedCsv path header as =
-    ByteString.writeFile path (Csv.encodeByName header as)
+    ByteString.writeFile path (Csv.encodeByName header (Data.Foldable.toList as))
 
-instance Num Bool where
-    fromInteger 0         = False
-    fromInteger n | n > 0 = True
+{-| A `Table` is an in-memory datatype analogous to a database table supporting
+    functionality similar to SQL operations, with one difference: a `Table` can
+    optionally supply a `fallback` result if queried for a missing key
 
-    (+) = (||)
-    (*) = (&&)
+    The type parameters of `Table` are:
 
-instance Num b => Num (a -> b) where
-    fromInteger n = pure (fromInteger n)
+    * @k@: the type of primary key of the `Table`
+    * @v@: the type of each row of the `Table` (not including the primary key)
 
-    negate = fmap negate
-    abs    = fmap abs
-    signum = fmap signum
+    You can create a `Table` using:
 
-    (+) = liftA2 (+)
-    (*) = liftA2 (*)
+    * `singleton`
+    * `fromList`
+    * `empty`
+    * `pure`
+    * the `Table` constructor
 
-data Keys k = All (k -> Bool) | Some (Set k)
+    You can transform a `Table` using:
 
-instance Ord k => Num (Keys k) where
-    fromInteger 0         = Some Set.empty
-    fromInteger n | n > 0 = All 1
+    * `insert`
+    * `filter`
+    * `fmap`
+    * `traverse`
+    * `gt`/`lt`/`ge`/`le`
 
-    All  x + All  y = All  (                x +                 y)
-    Some x + All  y = All  (flip Set.member x +                 y)
-    All  x + Some y = All  (                x + flip Set.member y)
-    Some x + Some y = Some (Set.union x y)
+    You can combine `Table`s using:
 
-    All  x * All  y = All  (x * y)
-    All  x * Some y = Some (Set.filter x y)
-    Some x * All  y = Some (Set.filter y x)
-    Some x * Some y = Some (Set.intersection x y)
+    * (`<|>`)
+    * `Applicative` operations, including @ApplicativeDo@
 
--- | A collection that holds a `Single` value
-newtype Single a = Single a deriving (Functor, Foldable, Traversable, Show)
+    You can consume `Table`s using:
 
-instance Applicative Single where
-    pure = Single
-
-    Single f <*> Single x = Single (f x)
-
-{-| A data set where values are grouped by keys
-
-    Think of this as conceptually associating each key with a collection of
-    values:
-
-> GroupBy k f v  ~  [(k, f v)]
-
-    * @k@: the type of the key
-
-    * @f@: the number of values in each group
-
-    * @v@: the type of the value
+    * `lookup`
+    * `Foldable` operations, including `toList`
+    * pattern matching on the `Table` constructor
 -}
-data GroupBy k f v = GroupBy
-    { _keys :: Keys k
-    , _lookup :: k -> f v 
-    }
+data Table k v = Table
+    { rows     :: Map k v
+    , fallback :: Maybe v
+    } deriving (Eq, Foldable, Functor, Ord, Show, Traversable)
 
-instance Functor f => Functor (GroupBy k f) where
-    fmap f (GroupBy s k) = GroupBy s (fmap (fmap f) k)
+instance Ord k => Applicative (Table k) where
+    pure v = Table Data.Map.Strict.empty (pure v)
 
-instance (Ord k, Applicative f) => Applicative (GroupBy k f) where
-    pure v = GroupBy 1 (pure (pure v))
+    Table lm (Just lv) <*> Table rm (Just rv) = Table m (pure (lv rv))
+      where
+        m = Data.Map.Strict.unions [apply lm rm, fmap lv rm, fmap ($ rv) lm]
+    Table lm Nothing <*> Table rm (Just rv) = Table m empty
+      where
+        m = Data.Map.Strict.union (apply lm rm) (fmap ($ rv) lm)
+    Table lm (Just lv) <*> Table rm Nothing  = Table m empty
+      where
+        m = Data.Map.Strict.union (apply lm rm) (fmap lv rm)
+    Table lm Nothing <*> Table rm Nothing = Table m empty
+      where
+        m = apply lm rm
 
-    GroupBy s1 f1 <*> GroupBy s2 f2 = GroupBy (s1 * s2) (liftA2 (<*>) f1 f2)
+instance Ord k => Alternative (Table k) where
+    empty = Table Data.Map.Strict.empty empty
 
-instance (Ord k, Alternative f) => Alternative (GroupBy k f) where
-    empty = GroupBy 0 (pure empty)
+    Table lm lv <|> Table rm rv = Table (Data.Map.Strict.union lm rm) (lv <|> rv)
 
-    GroupBy s1 f1 <|> GroupBy s2 f2 = GroupBy (s1 + s2) (liftA2 (<|>) f1 f2)
-
-instance Foldable f => Foldable (GroupBy k f) where
-    foldMap _ (GroupBy (All  _   ) _) = mempty
-    foldMap f (GroupBy (Some keys) k) = foldMap (foldMap f . k) keys
-
--- | Convert a list to a `GroupBy`
-fromList :: (Ord k, Alternative f) => [(k, v)] -> GroupBy k f v
-fromList kvs = GroupBy
-    { _keys   = Some (Set.fromList (fmap fst kvs))
-    , _lookup = \k ->
-        let cons (k', v) vs = if k == k' then pure v <|> vs else vs
-        in  foldr cons empty kvs
-    }
-
--- | Convert a `Map` to a `GroupBy`
-fromMap :: (Ord k, Alternative f) => Map k v -> GroupBy k f v
-fromMap m = GroupBy
-    { _keys   = Some (Set.fromList (Map.keys m))
-    , _lookup = \k -> case Map.lookup k m of
-        Nothing -> empty
-        Just v  -> pure v
-    }
+apply :: Ord k => Map k (a -> b) -> Map k a -> Map k b
+apply lm rm = Data.Map.Strict.mergeWithKey
+    (\_ a b -> Just (a b))
+    (\_ -> Data.Map.Strict.empty)
+    (\_ -> Data.Map.Strict.empty)
+    lm
+    rm
 
 {-| Insert a key-value pair
 
->>> let xs = fromList [('A', 1)] :: GroupBy Char [] Int
->>> toList (insert 'B' 2 xs)
-Just [('A',1),('B',2)]
+> insert k v t = singleton k v <|> t
+
+>>> let t = fromList [('A', 1)]
+>>> insert 'B' 2 t
+Table {rows = fromList [('A',1),('B',2)], fallback = Nothing}
 
     For bulk updates you should instead use `fromList` and (`<|>`)
 
->>> toList (fromList [('B', 2), ('C', 3)] <|> xs)
-Just [('A',1),('B',2),('C',3)]
+>>> fromList [('B', 2), ('C', 3)] <|> t
+Table {rows = fromList [('A',1),('B',2),('C',3)], fallback = Nothing}
 -}
-insert :: (Ord k, Alternative f) => k -> v -> GroupBy k f v -> GroupBy k f v
-insert k v g = fromList [(k, v)] <|> g
+insert :: Ord k => k -> v -> Table k v -> Table k v
+insert k v t = singleton k v <|> t
 
-{-| Reduce each group to a `Single` value
+-- | Create a `Table` from a single key-value pair
+singleton :: k -> v -> Table k v
+singleton k v = Table (Data.Map.Strict.singleton k v) empty
 
->>> import qualified Control.Foldl as Fold
->>> let xs = fromList [('A', 1), ('A', 2), ('A', 3), ('B', 4), ('B', 5), ('C', 6)] :: GroupBy Char [] Int
->>> toList (fold Fold.sum xs)
-Just [('A',6),('B',9),('C',6)]
->>> toList (fold Fold.length xs)
-Just [('A',3),('B',2),('C',1)]
->>> toList (fold Fold.list xs)
-Just [('A',[1,2,3]),('B',[4,5]),('C',[6])]
--}
-fold :: Foldable f => Fold v r -> GroupBy k f v -> GroupBy k Single r
-fold fvr (GroupBy s f) = GroupBy s f'
-  where
-    f' = fmap (Single . Fold.fold fvr) f
-
--- | Transform each element of a group using scan derived from a `Fold`
-scan :: Traversable f => Fold a b -> GroupBy k f a -> GroupBy k f b
-scan fab (GroupBy s f) = GroupBy s f'
-  where
-    f' = fmap (_scan fab) f
-
--- This belongs upstream in `foldl`
-_scan :: Traversable f => Fold a b -> f a -> f b
-_scan (Fold step begin done) as =
-    evalState (traverse (\a -> state (\x -> let y = step x a in (done y, y))) as) begin
-
-{-| If each value is a collection of the same type as the surrounding group,
-    flatten the two collections
-
->>> let xs = fromList [('A', [0, 1]), ('B', [2, 3])] :: GroupBy Char [] [Int]
->>> toList (flatten xs)
-Just [('A',0),('A',1),('B',2),('B',3)]
--}
-flatten :: Monad f => GroupBy k f (f v) -> GroupBy k f v
-flatten (GroupBy s f) = GroupBy s (fmap join f)
-
-{-| Sort each group
-
->>> let xs = fromList [('A', 2), ('A', 1), ('B', 4), ('B', 3)]
->>> toList (sort xs)
-Just [('A',1),('A',2),('B',3),('B',4)]
--}
-sort :: Ord v => GroupBy k [] v -> GroupBy k [] v
-sort (GroupBy s f) = GroupBy s (fmap Data.List.sort f)
-
--- | Only keep values that satisfy the given predicate
-filter :: MonadPlus f => (v -> Bool) -> GroupBy k f v -> GroupBy k f v
-filter predicate (GroupBy s f) = GroupBy s f'
-  where
-    f' = fmap (_filter predicate) f
-
-_filter :: MonadPlus f => (v -> Bool) -> f v -> f v
-_filter predicate vs = do
-    v <- vs
-    if predicate v then return v else mzero
-
--- | Filter out all groups whose key is greater than the given key
-gt :: (Ord k, Alternative f) => k -> GroupBy k f v -> GroupBy k f v
-gt k (GroupBy (Some s0) f) = GroupBy (Some s1) f'
-  where
-    (_, _, s1) = Set.splitMember k s0
-
-    f' k' = if k < k' then f k' else empty
-gt k (GroupBy (All  g ) f) = GroupBy (All  g') f'
-  where
-    g' k' = k < k' && g k
-    f' k' = if k < k' then f k' else empty
-
--- | Filter out all groups whose key is greater than or equal to the given key
-ge :: (Ord k, Alternative f) => k -> GroupBy k f v -> GroupBy k f v
-ge k (GroupBy (Some s0) f) = GroupBy (Some s2) f'
-  where
-    (_, b, s1) = Set.splitMember k s0
-    s2 = if b then Set.insert k s1 else s1
-
-    f' k' = if k <= k' then f k' else empty
-ge k (GroupBy (All  g ) f) = GroupBy (All  g') f'
-  where
-    g' k' = k <= k' && g k
-    f' k' = if k <= k' then f k' else empty
-
--- | Filter out all groups whose key is less than the given key
-lt :: (Ord k, Alternative f) => k -> GroupBy k f v -> GroupBy k f v
-lt k (GroupBy (Some s0) f) = GroupBy (Some s1) f'
-  where
-    (s1, _, _) = Set.splitMember k s0
-
-    f' k' = if k' < k then f k' else empty
-lt k (GroupBy (All  g ) f) = GroupBy (All  g') f'
-  where
-    g' k' = k' < k && g k
-    f' k' = if k' < k then f k' else empty
-
--- | Filter out all groups whose key is less than or equal to the given key
-le :: (Ord k, Alternative f) => k -> GroupBy k f v -> GroupBy k f v
-le k (GroupBy (Some s0) f) = GroupBy (Some s2) f'
-  where
-    (s1, b, _) = Set.splitMember k s0
-    s2 = if b then Set.insert k s1 else s1
-
-    f' k' = if k' <= k then f k' else empty
-le k (GroupBy (All  g ) f) = GroupBy (All  g') f'
-  where
-    g' k' = k' <= k && g k
-    f' k' = if k' <= k then f k' else empty
-
--- | Select just the groups whose key is exactly equal to the given key
-eq :: (Ord k, Alternative f) => k -> GroupBy k f v -> GroupBy k f v
-eq k (GroupBy s0 f) = GroupBy s1 f'
-  where
-    s1 = Some (Set.singleton k) * s0
-
-    f' k' = if k == k' then f k else empty
+-- | Create a `Table` from a list of key-value pairs
+fromList :: Ord k => [(k, v)] -> Table k v
+fromList kvs = Table (Data.Map.Strict.fromList kvs) empty
 
 -- | Find all values that match the given key
-lookup :: k -> GroupBy k f v -> f v
-lookup k g = _lookup g k
+lookup :: Ord k => k -> Table k v -> Maybe v
+lookup k (Table m v) = Data.Map.Strict.lookup k m <|> v
 
-{-| Convert a `GroupBy` to a list
+{-| Analogous to a @GROUP BY@ SQL clause
 
-    Returns `Nothing` if the `GroupBy` represents a function instead of a `Set`
-    keys
+    The type parameters of `Groups` are:
+
+    * @k@: the type of primary key associated with each group
+    * @v@: the element type stored within each group
+
+    You can create a `Group` using:
+
+    * `groupBy` / `group`
+    * `pure`
+
+    You can transform a `Group` using:
+
+    * `fmap`
+    * `traverse`
+
+    You can combine `Group`s using:
+
+    * (`<|>`)
+    * `Applicative` operations (including @ApplicativeDo@)
+
+    You can consume `Group`s using:
+
+    * `fold`
+    * pattern matching on the `Groups` constructor
 -}
-toList :: Foldable f => GroupBy k f v -> Maybe [(k, v)]
-toList (GroupBy (Some s) f) =
-    Just [ (k, v) | k <- Set.toList s, v <- Foldable.toList (f k) ]
-toList  _                   =
-    Nothing
+newtype Groups k v = Groups { toTable :: Table k (Vector v) }
+    deriving (Eq, Foldable, Functor, Ord, Show, Traversable)
 
-{-| Convert a `GroupBy` to a `Map`
+instance Ord k => Applicative (Groups k) where
+    pure x = Groups (pure (pure x))
 
-    Returns `Nothing` if the `GroupBy` represents a function instead of a `Set`
-    of keys
+    Groups l <*> Groups r = Groups (liftA2 (<*>) l r)
+
+instance Ord k => Alternative (Groups k) where
+    empty = Groups (pure empty)
+
+    Groups l <|> Groups r = Groups (liftA2 (<|>) l r)
+
+{-| This function is analogous to a @GROUP BY@ clause in an SQL expression
+
+    Note that `Table`s are `Foldable`, so you can use `groupBy` on a `Table`:
+
+> groupBy :: (v -> k) -> Table k' v -> Groups k v
+
+    ... but you can also use `groupBy` on a list or `Vector`, too:
+
+> groupBy :: (v -> k) ->       [v] -> Groups k v
+> groupBy :: (v -> k) -> Vector v  -> Groups k v
+
+>>> let kvs = [('A', 1), ('A', 2), ('A', 3), ('B', 4), ('B', 5), ('C', 6)]
+>>> fmap snd (groupBy fst kvs)
+Groups {toTable = Table {rows = fromList [('A',[1,2,3]),('B',[4,5]),('C',[6])], fallback = Nothing}}
 -}
-toMap :: (Eq k, Foldable f) => GroupBy k f v -> Maybe (Map k v)
-toMap = fmap Map.fromAscList . toList
+groupBy :: (Foldable f, Ord k) => (v -> k) -> f v -> Groups k v
+groupBy key vs = Groups (Table m Nothing)
+  where
+    kvs = do
+        v <- Data.Foldable.toList vs
+        return (key v, Data.Sequence.singleton v)
 
+    toVector = Data.Vector.fromList . Data.Foldable.toList
+
+    m = fmap toVector (Data.Map.Strict.fromListWith (flip (<>)) kvs)
+
+{-| Analogous to an SQL aggregate function
+
+    For example:
+
+    * the analog of @COUNT(*)@   is @fold Control.Foldl.length@
+    * the analog of @AVERAGE(*)@ is @fold Control.Foldl.mean@
+    * the analog of @MAXIMUM(*)@ is @fold Control.Foldl.maximum@
+    * the analog of @MINIMUM(*)@ is @fold Control.Foldl.minimum@
+    * the analog of @SUM(*)@     is @fold Control.Foldl.sum@
+
+    You can also fold on a specific column by using `lmap`.  For example, given this
+    datatype definition:
+
+    > data Example = Example { bar :: Int, baz :: Bool }
+
+    ... then the analog of @COUNT(bar)@ is @fold (lmap bar Control.Foldl.length)@
+
+    `fold` reduces each group to a single value using the supplied `Fold`
+
+>>> import qualified Control.Foldl as Fold
+>>> let kvs = [('A', 1), ('A', 2), ('A', 3), ('B', 4), ('B', 5), ('C', 6)]
+>>> let gs = fmap snd (groupBy fst kvs)
+>>> fold Fold.sum gs
+Table {rows = fromList [('A',6),('B',9),('C',6)], fallback = Nothing}
+>>> fold Fold.length gs
+Table {rows = fromList [('A',3),('B',2),('C',1)], fallback = Nothing}
+>>> fold Fold.list gs
+Table {rows = fromList [('A',[1,2,3]),('B',[4,5]),('C',[6])], fallback = Nothing}
+-}
+fold :: Fold v r -> Groups k v -> Table k r
+fold f (Groups g) = fmap (Control.Foldl.fold f) g
+
+#if MIN_VERSION_foldl(1,2,2)
+-- | This is the record type for the output of `describe`
+data Description a = Description
+    { _count :: Int
+    , _mean  :: a
+    , _std   :: a
+    , _min   :: Maybe a
+    , _max   :: Maybe a
+    } deriving (Show)
+
+{-| Analogous to the @.describe()@ method from @pandas@
+
+    Note that this works on any type that implements `Floating` and `Ord`, including
+    types like `R3`.  You can also generate a `Floating` instance for any
+    polymorphic record type using `deriveRow`
+
+>>> Control.Foldl.fold describe [0..10]
+Description {_count = 11, _mean = 5.0, _std = 3.1622776601683795, _min = Just 0.0, _max = Just 10.0}
+>>> Control.Foldl.fold describe [R3 1 2 3, R3 4 5 6, R3 7 8 9]
+Description {_count = 3, _mean = R3 4.0 5.0 6.0, _std = R3 2.449489742783178 2.449489742783178 2.449489742783178, _min = Just (R3 1.0 2.0 3.0), _max = Just (R3 7.0 8.0 9.0)}
+
+>>> :set -XOverloadedLists
+>>> let gs0 = Groups {toTable = Table {rows = [('A',[1,2,3]),('B',[4,5]),('C',[6])], fallback = Nothing}}
+>>> fold describe gs0
+Table {rows = fromList [('A',Description {_count = 3, _mean = 2.0, _std = 0.816496580927726, _min = Just 1.0, _max = Just 3.0}),('B',Description {_count = 2, _mean = 4.5, _std = 0.5, _min = Just 4.0, _max = Just 5.0}),('C',Description {_count = 1, _mean = 6.0, _std = 0.0, _min = Just 6.0, _max = Just 6.0})], fallback = Nothing}
+>>> let gs1 = Groups {toTable = Table {rows = [('A',[R3 1 2 3,R3 4 5 6,R3 7 8 9]),('B',[R3 10 11 12,R3 13 14 15]),('C',[R3 16 17 18])], fallback = Nothing}}
+>>> fold describe gs1
+Table {rows = fromList [('A',Description {_count = 3, _mean = R3 4.0 5.0 6.0, _std = R3 2.449489742783178 2.449489742783178 2.449489742783178, _min = Just (R3 1.0 2.0 3.0), _max = Just (R3 7.0 8.0 9.0)}),('B',Description {_count = 2, _mean = R3 11.5 12.5 13.5, _std = R3 1.5 1.5 1.5, _min = Just (R3 10.0 11.0 12.0), _max = Just (R3 13.0 14.0 15.0)}),('C',Description {_count = 1, _mean = R3 16.0 17.0 18.0, _std = R3 0.0 0.0 0.0, _min = Just (R3 16.0 17.0 18.0), _max = Just (R3 16.0 17.0 18.0)})], fallback = Nothing}
+-}
+describe :: (Floating a, Ord a) => Fold a (Description a)
+describe = do
+    _count <- Control.Foldl.length
+    _mean  <- Control.Foldl.mean
+    _std   <- Control.Foldl.std
+    _min   <- Control.Foldl.minimum
+    _max   <- Control.Foldl.maximum
+    return (Description {..})
+#endif
+
+-- | Only keep values that satisfy the given predicate
+filter :: (v -> Bool) -> Table k v -> Table k v
+filter predicate (Table m v) = Table m' v'
+  where
+    m' = Data.Map.Strict.filter predicate m
+
+    v' = mfilter predicate v
+
+-- | Filter out all groups whose key is greater than the given key
+gt :: Ord k => k -> Table k v -> Table k v
+gt k (Table m v) = Table m' v
+  where
+    (_, m')  = Data.Map.Strict.split k m
+
+-- | Filter out all groups whose key is greater than or equal to the given key
+ge :: Ord k => k -> Table k v -> Table k v
+ge k (Table m v) = Table m'' v
+  where
+    (_, mv, m') = Data.Map.Strict.splitLookup k m
+
+    m'' = case mv of
+        Nothing ->                             m'
+        Just v' -> Data.Map.Strict.insert k v' m'
+
+-- | Filter out all groups whose key is less than the given key
+lt :: Ord k => k -> Table k v -> Table k v
+lt k (Table m v) = Table m' v
+  where
+    (m', _) = Data.Map.Strict.split k m
+
+-- | Filter out all groups whose key is less than or equal to the given key
+le :: Ord k => k -> Table k v -> Table k v
+le k (Table m v) = Table m'' v
+  where
+    (m', mv, _) = Data.Map.Strict.splitLookup k m
+
+    m'' = case mv of
+        Nothing ->                             m'
+        Just v' -> Data.Map.Strict.insert k v' m'
+
+-- | A polymorphic record with 0 fields that implements numeric type classes
 data R0 = R0 deriving (Eq, Ord, Show)
 
 deriveRow ''R0
 
+-- | Transpose an `R0` record
+transposeR0 :: Applicative f => R0 -> f R0
+
+-- | A polymorphic record with 1 field that implements numeric type classes
 data R1 a = R1 !a deriving (Eq, Ord, Show)
 
 deriveRow ''R1
 
+-- | Transpose an `R1` record
+transposeR1 :: Applicative f => R1 (f a) -> f (R1 a)
+
 instance Field1 (R1 a) (R1 a') a a' where
     _1 k (R1 a) = fmap R1 (k a)
 
+-- | A polymorphic record with 2 fields that implements numeric type classes
 data R2 a b = R2 !a !b deriving (Eq, Ord, Show)
 
 deriveRow ''R2
+
+-- | Transpose an `R2` record
+transposeR2 :: Applicative f => R2 (f a) (f b) -> f (R2 a b)
 
 instance Field1 (R2 a b) (R2 a' b) a a' where
     _1 k (R2 a b) = fmap (\a' -> R2 a' b) (k a)
@@ -437,9 +468,13 @@ instance Field1 (R2 a b) (R2 a' b) a a' where
 instance Field2 (R2 a b) (R2 a b') b b' where
     _2 k (R2 a b) = fmap (\b' -> R2 a b') (k b)
 
+-- | A polymorphic record with 3 fields that implements numeric type classes
 data R3 a b c = R3 !a !b !c deriving (Eq, Ord, Show)
 
 deriveRow ''R3
+
+-- | Transpose an `R3` record
+transposeR3 :: Applicative f => R3 (f a) (f b) (f c) -> f (R3 a b c)
 
 instance Field1 (R3 a b c) (R3 a' b c) a a' where
     _1 k (R3 a b c) = fmap (\a' -> R3 a' b c) (k a)
@@ -450,9 +485,13 @@ instance Field2 (R3 a b c) (R3 a b' c) b b' where
 instance Field3 (R3 a b c) (R3 a b c') c c' where
     _3 k (R3 a b c) = fmap (\c' -> R3 a b c') (k c)
 
+-- | A polymorphic record with 4 fields that implements numeric type classes
 data R4 a b c d = R4 !a !b !c !d deriving (Eq, Ord, Show)
 
 deriveRow ''R4
+
+-- | Transpose an `R4` record
+transposeR4 :: Applicative f => R4 (f a) (f b) (f c) (f d) -> f (R4 a b c d)
 
 instance Field1 (R4 a b c d) (R4 a' b c d) a a' where
     _1 k (R4 a b c d) = fmap (\a' -> R4 a' b c d) (k a)
