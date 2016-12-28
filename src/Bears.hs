@@ -10,7 +10,10 @@
 {-# OPTIONS_GHC -fno-warn-missing-methods #-}
 {-# OPTIONS_GHC -fno-warn-orphans         #-}
 
-{-| Example usage:
+{-| This library provides a simple and reasonably efficient Haskell implementation
+    of relational operations on in-memory `Table`s
+
+    Example usage:
 
 >>> let xs = fromList [(0, "Gabriel"), (1, "Oscar"), (2, "Edgar")]
 >>> let ys = fromList [(0, "GabrielG439"), (1, "posco"), (3, "avibryant")]
@@ -51,15 +54,8 @@ Table {rows = fromList [(0,"Gabriel"),(1,"Oscar"),(2,"Edgar"),(3,"avibryant")], 
 -}
 
 module Bears (
-    -- * CSV
-      Csv.HasHeader(..)
-    , readCsv
-    , readNamedCsv
-    , writeCsv
-    , writeNamedCsv
-
     -- * Table
-    , Table(..)
+      Table(..)
     , singleton
     , fromList
     , insert
@@ -92,6 +88,13 @@ module Bears (
     , transposeR3
     , R4(..)
     , transposeR4
+
+    -- * CSV
+    , Csv.HasHeader(..)
+    , readCsv
+    , readNamedCsv
+    , writeCsv
+    , writeNamedCsv
 
     -- * Re-exports
     , module Bears.TH
@@ -180,7 +183,7 @@ writeNamedCsv path header as =
     * `filter`
     * `fmap`
     * `traverse`
-    * `gt`/`lt`/`ge`/`le`
+    * `gt` \/ `lt` \/ `ge` \/ `le`
 
     You can combine `Table`s using:
 
@@ -383,12 +386,13 @@ data Description a = Description
 
 {-| Analogous to the @.describe()@ method from @pandas@
 
+>>> Control.Foldl.fold describe [0..10]
+Description {_count = 11, _mean = 5.0, _std = 3.1622776601683795, _min = Just 0.0, _max = Just 10.0}
+
     Note that this works on any type that implements `Floating` and `Ord`, including
     types like `R3`.  You can also generate a `Floating` instance for any
     polymorphic record type using `deriveRow`
 
->>> Control.Foldl.fold describe [0..10]
-Description {_count = 11, _mean = 5.0, _std = 3.1622776601683795, _min = Just 0.0, _max = Just 10.0}
 >>> Control.Foldl.fold describe [R3 1 2 3, R3 4 5 6, R3 7 8 9]
 Description {_count = 3, _mean = R3 4.0 5.0 6.0, _std = R3 2.449489742783178 2.449489742783178 2.449489742783178, _min = Just (R3 1.0 2.0 3.0), _max = Just (R3 7.0 8.0 9.0)}
 
