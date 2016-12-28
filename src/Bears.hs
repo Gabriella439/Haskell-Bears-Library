@@ -95,8 +95,6 @@ module Bears (
 
     -- * Re-exports
     , module Bears.TH
-    , view
-    , over
     , optional
     ) where
 
@@ -104,7 +102,6 @@ import Bears.TH
 import Control.Applicative
 import Control.Exception (throwIO)
 import Control.Foldl (Fold(..))
-import Control.Lens (Field1(..), Field2(..), Field3(..), Field4(..), view, over)
 import Control.Monad (MonadPlus(..), join, mfilter)
 import Control.Monad.Trans.State (state, evalState)
 import Data.ByteString.Lazy (ByteString)
@@ -254,7 +251,25 @@ singleton k v = Table (Data.Map.Strict.singleton k v) empty
 fromList :: Ord k => [(k, v)] -> Table k v
 fromList kvs = Table (Data.Map.Strict.fromList kvs) empty
 
--- | Find all values that match the given key
+{-| Retrieve a row from a `Table` by the primary key
+
+>>> import qualified Data.Map as Map
+>>> let t = Table { rows = Map.fromList [(0,"Gabriel"),(1,"Oscar"),(2,"Edgar")], fallback = Nothing }
+>>> lookup 0 t
+Just "Gabriel"
+>>> lookup 1 t
+Just "Oscar"
+>>> lookup 3 t
+Nothing
+
+    If the `Table` supplies a `fallback` then `lookup` will return that value if no
+    row matches the given key:
+
+>>> let t = Table { rows = Map.fromList [(0,"Gabriel"),(1,"Oscar"),(2,"Edgar")], fallback = Just "John" }
+>>> lookup 3 t
+Just "John"
+
+-}
 lookup :: Ord k => k -> Table k v -> Maybe v
 lookup k (Table m v) = Data.Map.Strict.lookup k m <|> v
 
@@ -335,9 +350,9 @@ groupBy key vs = Groups (Table m Nothing)
     * the analog of @SUM(*)@     is @fold Control.Foldl.sum@
 
     You can also fold on a specific column by using `lmap`.  For example, given this
-    datatype definition:
+    datatype definition for a row:
 
-    > data Example = Example { bar :: Int, baz :: Bool }
+    > data Row = Row { bar :: Int, baz :: Bool }
 
     ... then the analog of @COUNT(bar)@ is @fold (lmap bar Control.Foldl.length)@
 
@@ -377,13 +392,6 @@ Description {_count = 11, _mean = 5.0, _std = 3.1622776601683795, _min = Just 0.
 >>> Control.Foldl.fold describe [R3 1 2 3, R3 4 5 6, R3 7 8 9]
 Description {_count = 3, _mean = R3 4.0 5.0 6.0, _std = R3 2.449489742783178 2.449489742783178 2.449489742783178, _min = Just (R3 1.0 2.0 3.0), _max = Just (R3 7.0 8.0 9.0)}
 
->>> :set -XOverloadedLists
->>> let gs0 = Groups {toTable = Table {rows = [('A',[1,2,3]),('B',[4,5]),('C',[6])], fallback = Nothing}}
->>> fold describe gs0
-Table {rows = fromList [('A',Description {_count = 3, _mean = 2.0, _std = 0.816496580927726, _min = Just 1.0, _max = Just 3.0}),('B',Description {_count = 2, _mean = 4.5, _std = 0.5, _min = Just 4.0, _max = Just 5.0}),('C',Description {_count = 1, _mean = 6.0, _std = 0.0, _min = Just 6.0, _max = Just 6.0})], fallback = Nothing}
->>> let gs1 = Groups {toTable = Table {rows = [('A',[R3 1 2 3,R3 4 5 6,R3 7 8 9]),('B',[R3 10 11 12,R3 13 14 15]),('C',[R3 16 17 18])], fallback = Nothing}}
->>> fold describe gs1
-Table {rows = fromList [('A',Description {_count = 3, _mean = R3 4.0 5.0 6.0, _std = R3 2.449489742783178 2.449489742783178 2.449489742783178, _min = Just (R3 1.0 2.0 3.0), _max = Just (R3 7.0 8.0 9.0)}),('B',Description {_count = 2, _mean = R3 11.5 12.5 13.5, _std = R3 1.5 1.5 1.5, _min = Just (R3 10.0 11.0 12.0), _max = Just (R3 13.0 14.0 15.0)}),('C',Description {_count = 1, _mean = R3 16.0 17.0 18.0, _std = R3 0.0 0.0 0.0, _min = Just (R3 16.0 17.0 18.0), _max = Just (R3 16.0 17.0 18.0)})], fallback = Nothing}
 -}
 describe :: (Floating a, Ord a) => Fold a (Description a)
 describe = do
@@ -451,9 +459,6 @@ deriveRow ''R1
 -- | Transpose an `R1` record
 transposeR1 :: Applicative f => R1 (f a) -> f (R1 a)
 
-instance Field1 (R1 a) (R1 a') a a' where
-    _1 k (R1 a) = fmap R1 (k a)
-
 -- | A polymorphic record with 2 fields that implements numeric type classes
 data R2 a b = R2 !a !b deriving (Eq, Ord, Show)
 
@@ -461,12 +466,6 @@ deriveRow ''R2
 
 -- | Transpose an `R2` record
 transposeR2 :: Applicative f => R2 (f a) (f b) -> f (R2 a b)
-
-instance Field1 (R2 a b) (R2 a' b) a a' where
-    _1 k (R2 a b) = fmap (\a' -> R2 a' b) (k a)
-
-instance Field2 (R2 a b) (R2 a b') b b' where
-    _2 k (R2 a b) = fmap (\b' -> R2 a b') (k b)
 
 -- | A polymorphic record with 3 fields that implements numeric type classes
 data R3 a b c = R3 !a !b !c deriving (Eq, Ord, Show)
@@ -476,15 +475,6 @@ deriveRow ''R3
 -- | Transpose an `R3` record
 transposeR3 :: Applicative f => R3 (f a) (f b) (f c) -> f (R3 a b c)
 
-instance Field1 (R3 a b c) (R3 a' b c) a a' where
-    _1 k (R3 a b c) = fmap (\a' -> R3 a' b c) (k a)
-
-instance Field2 (R3 a b c) (R3 a b' c) b b' where
-    _2 k (R3 a b c) = fmap (\b' -> R3 a b' c) (k b)
-
-instance Field3 (R3 a b c) (R3 a b c') c c' where
-    _3 k (R3 a b c) = fmap (\c' -> R3 a b c') (k c)
-
 -- | A polymorphic record with 4 fields that implements numeric type classes
 data R4 a b c d = R4 !a !b !c !d deriving (Eq, Ord, Show)
 
@@ -492,15 +482,3 @@ deriveRow ''R4
 
 -- | Transpose an `R4` record
 transposeR4 :: Applicative f => R4 (f a) (f b) (f c) (f d) -> f (R4 a b c d)
-
-instance Field1 (R4 a b c d) (R4 a' b c d) a a' where
-    _1 k (R4 a b c d) = fmap (\a' -> R4 a' b c d) (k a)
-
-instance Field2 (R4 a b c d) (R4 a b' c d) b b' where
-    _2 k (R4 a b c d) = fmap (\b' -> R4 a b' c d) (k b)
-
-instance Field3 (R4 a b c d) (R4 a b c' d) c c' where
-    _3 k (R4 a b c d) = fmap (\c' -> R4 a b c' d) (k c)
-
-instance Field4 (R4 a b c d) (R4 a b c d') d d' where
-    _4 k (R4 a b c d) = fmap (\d' -> R4 a b c d') (k d)

@@ -20,7 +20,6 @@ library
                      , cassava
                      , containers
                      , foldl
-                     , lens
                      , transformers
                      , template-haskell
                      , vector
