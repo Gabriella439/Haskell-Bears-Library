@@ -198,12 +198,12 @@ writeNamedCsv path header as =
     * `Foldable` operations, including `toList`
     * pattern matching on the `Table` constructor
 -}
-data Table k v = Table
-    { rows     :: Map k v
-    , fallback :: Maybe v
+data Table key row = Table
+    { rows     :: Map key row
+    , fallback :: Maybe row
     } deriving (Eq, Foldable, Functor, Ord, Show, Traversable)
 
-instance Ord k => Applicative (Table k) where
+instance Ord key => Applicative (Table key) where
     pure v = Table Data.Map.Strict.empty (pure v)
 
     Table lm (Just lv) <*> Table rm (Just rv) = Table m (pure (lv rv))
@@ -219,12 +219,12 @@ instance Ord k => Applicative (Table k) where
       where
         m = apply lm rm
 
-instance Ord k => Alternative (Table k) where
+instance Ord key => Alternative (Table key) where
     empty = Table Data.Map.Strict.empty empty
 
     Table lm lv <|> Table rm rv = Table (Data.Map.Strict.union lm rm) (lv <|> rv)
 
-apply :: Ord k => Map k (a -> b) -> Map k a -> Map k b
+apply :: Ord key => Map key (a -> b) -> Map key a -> Map key b
 apply lm rm = Data.Map.Strict.mergeWithKey
     (\_ a b -> Just (a b))
     (\_ -> Data.Map.Strict.empty)
@@ -245,15 +245,15 @@ Table {rows = fromList [('A',1),('B',2)], fallback = Nothing}
 >>> fromList [('B', 2), ('C', 3)] <|> t
 Table {rows = fromList [('A',1),('B',2),('C',3)], fallback = Nothing}
 -}
-insert :: Ord k => k -> v -> Table k v -> Table k v
+insert :: Ord key => key -> row -> Table key row -> Table key row
 insert k v t = singleton k v <|> t
 
 -- | Create a `Table` from a single key-value pair
-singleton :: k -> v -> Table k v
+singleton :: key -> row -> Table key row
 singleton k v = Table (Data.Map.Strict.singleton k v) empty
 
 -- | Create a `Table` from a list of key-value pairs
-fromList :: Ord k => [(k, v)] -> Table k v
+fromList :: Ord key => [(key, row)] -> Table key row
 fromList kvs = Table (Data.Map.Strict.fromList kvs) empty
 
 {-| Retrieve a row from a `Table` by the primary key
@@ -275,7 +275,7 @@ Nothing
 Just "John"
 
 -}
-lookup :: Ord k => k -> Table k v -> Maybe v
+lookup :: Ord key => key -> Table key row -> Maybe row
 lookup k (Table m v) = Data.Map.Strict.lookup k m <|> v
 
 {-| Analogous to a @GROUP BY@ SQL clause
@@ -305,15 +305,15 @@ lookup k (Table m v) = Data.Map.Strict.lookup k m <|> v
     * `fold`
     * pattern matching on the `Groups` constructor
 -}
-newtype Groups k v = Groups { toTable :: Table k (Vector v) }
+newtype Groups key row = Groups { toTable :: Table key (Vector row) }
     deriving (Eq, Foldable, Functor, Ord, Show, Traversable)
 
-instance Ord k => Applicative (Groups k) where
+instance Ord key => Applicative (Groups key) where
     pure x = Groups (pure (pure x))
 
     Groups l <*> Groups r = Groups (liftA2 (<*>) l r)
 
-instance Ord k => Alternative (Groups k) where
+instance Ord key => Alternative (Groups key) where
     empty = Groups (pure empty)
 
     Groups l <|> Groups r = Groups (liftA2 (<|>) l r)
@@ -322,18 +322,18 @@ instance Ord k => Alternative (Groups k) where
 
     Note that `Table`s are `Foldable`, so you can use `groupBy` on a `Table`:
 
-> groupBy :: (v -> k) -> Table k' v -> Groups k v
+> groupBy :: (row -> key) -> Table key' row -> Groups key row
 
     ... but you can also use `groupBy` on a list or `Vector`, too:
 
-> groupBy :: (v -> k) ->       [v] -> Groups k v
-> groupBy :: (v -> k) -> Vector v  -> Groups k v
+> groupBy :: (row -> key) ->       [row] -> Groups key row
+> groupBy :: (row -> key) -> Vector row  -> Groups key row
 
 >>> let kvs = [('A', 1), ('A', 2), ('A', 3), ('B', 4), ('B', 5), ('C', 6)]
 >>> fmap snd (groupBy fst kvs)
 Groups {toTable = Table {rows = fromList [('A',[1,2,3]),('B',[4,5]),('C',[6])], fallback = Nothing}}
 -}
-groupBy :: (Foldable f, Ord k) => (v -> k) -> f v -> Groups k v
+groupBy :: (Foldable f, Ord key) => (row -> key) -> f row -> Groups key row
 groupBy key vs = Groups (Table m Nothing)
   where
     kvs = do
@@ -373,7 +373,7 @@ Table {rows = fromList [('A',3),('B',2),('C',1)], fallback = Nothing}
 >>> fold Fold.list gs
 Table {rows = fromList [('A',[1,2,3]),('B',[4,5]),('C',[6])], fallback = Nothing}
 -}
-fold :: Fold v r -> Groups k v -> Table k r
+fold :: Fold row result -> Groups key row -> Table key result
 fold f (Groups g) = fmap (Control.Foldl.fold f) g
 
 #if MIN_VERSION_foldl(1,2,2)
@@ -413,7 +413,7 @@ describe = do
 
     Only keep values that satisfy the given predicate
 -}
-filter :: (v -> Bool) -> Table k v -> Table k v
+filter :: (row -> Bool) -> Table key row -> Table key row
 filter predicate (Table m v) = Table m' v'
   where
     m' = Data.Map.Strict.filter predicate m
@@ -430,7 +430,7 @@ Table {rows = fromList [(0,"Test"),(1,"ABC"),(2,"Foo"),(3,"Dog")], fallback = No
 >>> take 2 t
 Table {rows = fromList [(0,"Test"),(1,"ABC")], fallback = Nothing}
 -}
-take :: Eq k => Int -> Table k v -> Table k v
+take :: Eq key => Int -> Table key row -> Table key row
 take n (Table m v) = Table (adapt m) v
   where
     adapt =
@@ -439,13 +439,13 @@ take n (Table m v) = Table (adapt m) v
         . Data.Map.Strict.toAscList
 
 -- | Filter out all groups whose key is greater than the given key
-gt :: Ord k => k -> Table k v -> Table k v
+gt :: Ord key => key -> Table key row -> Table key row
 gt k (Table m v) = Table m' v
   where
     (_, m')  = Data.Map.Strict.split k m
 
 -- | Filter out all groups whose key is greater than or equal to the given key
-ge :: Ord k => k -> Table k v -> Table k v
+ge :: Ord key => key -> Table key row -> Table key row
 ge k (Table m v) = Table m'' v
   where
     (_, mv, m') = Data.Map.Strict.splitLookup k m
@@ -455,13 +455,13 @@ ge k (Table m v) = Table m'' v
         Just v' -> Data.Map.Strict.insert k v' m'
 
 -- | Filter out all groups whose key is less than the given key
-lt :: Ord k => k -> Table k v -> Table k v
+lt :: Ord key => key -> Table key row -> Table key row
 lt k (Table m v) = Table m' v
   where
     (m', _) = Data.Map.Strict.split k m
 
 -- | Filter out all groups whose key is less than or equal to the given key
-le :: Ord k => k -> Table k v -> Table k v
+le :: Ord key => key -> Table key row -> Table key row
 le k (Table m v) = Table m'' v
   where
     (m', mv, _) = Data.Map.Strict.splitLookup k m
