@@ -19,7 +19,7 @@ library
                      , bytestring
                      , cassava
                      , containers
-                     , foldl
+                     , foldl >= 1.2.2
                      , transformers
                      , template-haskell
                      , vector

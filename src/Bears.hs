@@ -65,6 +65,7 @@ module Bears (
     , lt
     , le
     , filter
+    , take
 
     -- * Groups
     , Groups(..)
@@ -112,12 +113,13 @@ import Data.Map (Map)
 import Data.Monoid ((<>))
 import Data.Set (Set)
 import Data.Vector (Vector)
-import Prelude hiding (filter, lookup, drop, take)
+import Prelude hiding (filter, lookup, take)
 
 import qualified Control.Foldl
 import qualified Data.ByteString.Lazy as ByteString
 import qualified Data.Csv             as Csv
 import qualified Data.Foldable
+import qualified Data.List
 import qualified Data.Map.Strict
 import qualified Data.Sequence
 import qualified Data.Vector
@@ -407,13 +409,34 @@ describe = do
     return (Description {..})
 #endif
 
--- | Only keep values that satisfy the given predicate
+{-| Analogous to a @WHERE@ SQL clause
+
+    Only keep values that satisfy the given predicate
+-}
 filter :: (v -> Bool) -> Table k v -> Table k v
 filter predicate (Table m v) = Table m' v'
   where
     m' = Data.Map.Strict.filter predicate m
 
     v' = mfilter predicate v
+
+{-| Analogous to a @LIMIT@ SQL clause
+
+    Retrieve up to the specified number of values
+
+>>> let t = fromList (zip [0..] ["Test", "ABC", "Foo", "Dog"])
+>>> t
+Table {rows = fromList [(0,"Test"),(1,"ABC"),(2,"Foo"),(3,"Dog")], fallback = Nothing}
+>>> take 2 t
+Table {rows = fromList [(0,"Test"),(1,"ABC")], fallback = Nothing}
+-}
+take :: Eq k => Int -> Table k v -> Table k v
+take n (Table m v) = Table (adapt m) v
+  where
+    adapt =
+          Data.Map.Strict.fromDistinctAscList
+        . Data.List.take n
+        . Data.Map.Strict.toAscList
 
 -- | Filter out all groups whose key is greater than the given key
 gt :: Ord k => k -> Table k v -> Table k v
